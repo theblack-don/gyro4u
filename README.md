@@ -75,6 +75,8 @@ Native Linux Gui tool for configuring DualSense controllers.
     - Author theme (my custom theme)
     - Deep Dark
     - Tokyo Night
+    - Noctalia (follows the current Noctalia / KineticWE color scheme)
+- The Noctalia theme reads the colors Noctalia generates for GTK/KDE and refreshes automatically when the palette changes.
 - Custom theme support (see [Custom Themes](#custom-themes))
 
 ### Daemon

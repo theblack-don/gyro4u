@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant, SystemTime},
+};
 
 use egui::Color32;
 use serde::{Deserialize, Serialize};
@@ -79,7 +83,13 @@ pub struct Theme {
 }
 
 pub fn builtin_themes() -> Vec<Theme> {
-    vec![default(), author_theme(), deep_dark(), tokyo_night()]
+    vec![
+        default(),
+        author_theme(),
+        deep_dark(),
+        tokyo_night(),
+        crate::noctalia::theme(),
+    ]
 }
 
 pub fn default_theme() -> Theme {
@@ -173,6 +183,8 @@ pub fn tokyo_night() -> Theme {
 pub struct ThemeManager {
     dir: PathBuf,
     cache: Vec<Theme>,
+    noctalia_mtime: Option<SystemTime>,
+    last_noctalia_poll: Instant,
 }
 
 impl ThemeManager {
@@ -186,6 +198,8 @@ impl ThemeManager {
         let mut mgr = Self {
             dir,
             cache: Vec::new(),
+            noctalia_mtime: None,
+            last_noctalia_poll: Instant::now(),
         };
         mgr.reload();
         mgr
@@ -193,6 +207,21 @@ impl ThemeManager {
 
     pub fn reload(&mut self) {
         self.cache = self.scan();
+        self.noctalia_mtime = crate::noctalia::source_mtime();
+    }
+
+    pub fn poll_noctalia(&mut self) -> Option<Theme> {
+        if self.last_noctalia_poll.elapsed() < Duration::from_secs(5) {
+            return None;
+        }
+        self.last_noctalia_poll = Instant::now();
+
+        if crate::noctalia::source_mtime() == self.noctalia_mtime {
+            return None;
+        }
+
+        self.reload();
+        Some(self.load_by_id(crate::noctalia::ID))
     }
 
     fn theme_path(&self, id: &str) -> PathBuf {

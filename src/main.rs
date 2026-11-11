@@ -16,6 +16,7 @@ mod inputs;
 mod haptics_stream;
 mod usb_haptics;
 mod ipc;
+mod noctalia;
 mod profiles;
 mod settings;
 mod state;

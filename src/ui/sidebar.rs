@@ -210,20 +210,6 @@ impl DS4UApp {
             egui::FontId::proportional(20.0),
             c.accent(),
         );
-        let flag = Rect::from_min_size(
-            pos2(rect.min.x + 86.0, rect.center().y - 6.0),
-            vec2(20.0, 12.0),
-        );
-        p.rect_filled(
-            Rect::from_min_max(flag.min, pos2(flag.max.x, flag.center().y)),
-            0.0,
-            Color32::from_rgb(0, 87, 183),
-        );
-        p.rect_filled(
-            Rect::from_min_max(pos2(flag.min.x, flag.center().y), flag.max),
-            0.0,
-            Color32::from_rgb(255, 221, 0),
-        );
     }
 
     pub(crate) fn render_sidebar(&mut self, ui: &mut Ui) {

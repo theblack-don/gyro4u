@@ -147,6 +147,12 @@ impl App for DS4UApp {
 
         self.check_firmware_progress();
 
+        if self.theme.id == crate::noctalia::ID
+            && let Some(theme) = self.theme_manager.poll_noctalia()
+        {
+            self.theme = theme;
+        }
+
         apply_style(ctx, &self.theme);
 
         let c = self.theme.colors.clone();
