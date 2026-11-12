@@ -17,6 +17,7 @@ use crate::{
     settings::{Settings, SettingsManager},
     state::*,
     theme::{Theme, ThemeManager},
+    touchpad_filter::TouchpadFilter,
     transform::{GyroProcessor, InputTransform},
     util::mlock,
 };
@@ -80,6 +81,7 @@ pub(crate) struct DS4UApp {
     haptic_stream: crate::haptics_stream::HapticStream,
     usb_haptic_stream: crate::usb_haptics::UsbHapticStream,
     daemon_raw_active: bool,
+    touchpad_filter: Option<TouchpadFilter>,
 }
 
 impl DS4UApp {
@@ -200,6 +202,7 @@ impl DS4UApp {
             haptic_stream: crate::haptics_stream::HapticStream::new(),
             usb_haptic_stream: crate::usb_haptics::UsbHapticStream::new(),
             daemon_raw_active: false,
+            touchpad_filter: None,
         };
 
         app.check_for_controller();
@@ -351,14 +354,17 @@ impl DS4UApp {
                 self.apply_microphone();
                 self.apply_input_transform();
                 self.apply_triggers();
+                self.start_touchpad_filter();
             }
             Err(_) => {
                 self.controller = None;
+                self.stop_touchpad_filter();
             }
         }
     }
 
     pub(crate) fn connect_via_daemon(&mut self, client: Arc<Mutex<IpcClient>>) {
+        self.stop_touchpad_filter();
         let mut c = mlock(&client);
 
         if let Ok(Some((serial, pid, is_bt))) = c.get_controller_info() {
@@ -391,6 +397,7 @@ impl DS4UApp {
     }
 
     fn disconnect_controller(&mut self) {
+        self.stop_touchpad_filter();
         self.controller = None;
         self.battery_info = None;
         self.ipc = None;
@@ -1044,9 +1051,23 @@ impl DS4UApp {
 
         self.input_transform = t.clone();
 
+        if let Some(filter) = &self.touchpad_filter {
+            filter.set_mode(self.touchpad.mode);
+        }
         if let Some(be) = self.backend() {
             be.set_input_transform(t);
         }
+    }
+
+    fn start_touchpad_filter(&mut self) {
+        if self.touchpad_filter.is_some() {
+            return;
+        }
+        self.touchpad_filter = Some(TouchpadFilter::start(self.touchpad.mode));
+    }
+
+    fn stop_touchpad_filter(&mut self) {
+        self.touchpad_filter = None;
     }
 
     pub(crate) fn create_profile(&mut self, name: &str) -> bool {

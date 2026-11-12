@@ -11,7 +11,7 @@ use std::{
 use hidapi::HidApi;
 
 use crate::{
-    common::{HapticPattern, LightbarEffect},
+    common::{HapticPattern, LightbarEffect, TouchpadMode},
     dualsense::{DualSense, HAPTICS_PACKET_FRAMES, HAPTICS_SAMPLE_RATE},
     haptics_stream::generate_packet,
     input_grab::InputGrab,
@@ -22,6 +22,7 @@ use crate::{
     },
     profiles::ProfileManager,
     settings::SettingsManager,
+    touchpad_filter::{TouchpadFilter, TouchpadModeHandle},
     transform::{GyroProcessor, InputTransform},
     util::{mlock, rlock, wait_cv, wlock},
     virtual_gamepad::VirtualGamepad,
@@ -87,6 +88,7 @@ struct DaemonState {
     inner: RwLock<DaemonInner>,
     hotplug: (Mutex<bool>, Condvar),
     latest_input: Mutex<Option<LatestInput>>,
+    touchpad_mode: TouchpadModeHandle,
 }
 
 impl DaemonState {
@@ -110,6 +112,7 @@ impl DaemonState {
             }),
             hotplug: (Mutex::new(false), Condvar::new()),
             latest_input: Mutex::new(None),
+            touchpad_mode: TouchpadModeHandle::new(TouchpadMode::Mouse),
         })
     }
 }
@@ -140,6 +143,9 @@ fn apply_profile_to_state(state: &Arc<DaemonState>, name: &str) -> String {
 
     let mut inner = wlock(&state.inner);
     inner.active_transform = p.to_input_transform();
+    state
+        .touchpad_mode
+        .set(inner.active_transform.touchpad_mode);
     let r = (p.lightbar_r * 255.0) as u8;
     let g = (p.lightbar_g * 255.0) as u8;
     let b = (p.lightbar_b * 255.0) as u8;
@@ -200,6 +206,8 @@ pub fn run_daemon() {
         wlock(&state.inner).active_profile_name = loaded.clone();
         println!("{} profile '{}' loaded", TAG, loaded);
     }
+
+    let _touchpad_filter = TouchpadFilter::start_with_handle(state.touchpad_mode.clone());
 
     {
         let s = Arc::clone(&state);
@@ -495,12 +503,15 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
             }
 
             DaemonCommand::SetInputTransform { transform } => {
+                state.touchpad_mode.set(transform.touchpad_mode);
                 wlock(&state.inner).active_transform = transform;
                 send(&mut writer, DaemonResponse::Ok);
             }
 
             DaemonCommand::ClearInputTransform => {
-                wlock(&state.inner).active_transform = InputTransform::default();
+                let transform = InputTransform::default();
+                state.touchpad_mode.set(transform.touchpad_mode);
+                wlock(&state.inner).active_transform = transform;
                 send(&mut writer, DaemonResponse::Ok);
             }
 

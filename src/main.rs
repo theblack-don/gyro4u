@@ -27,6 +27,7 @@ mod ui;
 mod util;
 mod virtual_gamepad;
 mod input_grab;
+mod touchpad_filter;
 
 fn main() -> Result<(), eframe::Error> {
     let args: Vec<String> = env::args().collect();

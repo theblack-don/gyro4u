@@ -56,6 +56,16 @@ impl InputGrab {
                 continue;
             }
 
+            // The touchpad is grabbed separately by touchpad_filter so its
+            // mode can be applied without hiding the whole controller.
+            if dev
+                .property_value("ID_INPUT_TOUCHPAD")
+                .and_then(|v| v.to_str())
+                == Some("1")
+            {
+                continue;
+            }
+
             let vendor = dev
                 .property_value("ID_VENDOR_ID")
                 .and_then(|v| v.to_str())

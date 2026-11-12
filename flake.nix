@@ -16,6 +16,21 @@
       packages = forAllSystems (
         pkgs:
         let
+          # winit and wgpu load these with dlopen at runtime, so they need to
+          # be on the binary's RUNPATH rather than just in buildInputs.
+          runtimeLibs = with pkgs; [
+            libglvnd
+            libx11
+            libxcb
+            libxcursor
+            libxi
+            libxkbcommon
+            libxrandr
+            libxrender
+            vulkan-loader
+            wayland
+          ];
+
           ds4u = pkgs.rustPlatform.buildRustPackage {
             pname = "ds4u";
             version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
@@ -23,13 +38,19 @@
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false;
 
-            nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = with pkgs; [
-              alsa-lib
-              libxkbcommon
-              openssl
-              udev
+            nativeBuildInputs = [
+              pkgs.patchelf
+              pkgs.pkg-config
             ];
+            buildInputs = [
+              pkgs.alsa-lib
+              pkgs.openssl
+              pkgs.udev
+            ] ++ runtimeLibs;
+
+            postFixup = ''
+              patchelf --add-rpath "${pkgs.lib.makeLibraryPath runtimeLibs}" "$out/bin/ds4u"
+            '';
 
             meta = with pkgs.lib; {
               description = "DualSense 4 You";
