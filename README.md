@@ -1,9 +1,3 @@
-[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner-direct-single.svg)](https://stand-with-ukraine.pp.ua)
-
-[![Stand For Ukraine](https://img.shields.io/badge/Stand_For_Ukraine-find_a_charity-blue?style=for-the-badge)](https://standforukraine.com/)
-
----
-
 [![GitHub](https://img.shields.io/badge/GitHub-Repo-black)](https://github.com/theblack-don/gyro4u)
 
 # Gyro4U
@@ -26,7 +20,7 @@ Native Linux GUI tool for configuring DualSense controllers and the 2026 Steam C
 Gyro4U is based on [DS4U](https://git.yokai.digital/deadYokai/ds4u) by deadYokai
 ([GitHub mirror](https://github.com/deadYokai/ds4u)).
 
-![Gyro4U Steam Controller button mapping editor](preview/app.png)
+![Gyro4U Steam Controller button mapping editor](preview/app-steam.png)
 
 ## Features
 
