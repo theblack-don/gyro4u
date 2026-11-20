@@ -26,7 +26,7 @@ Native Linux GUI tool for configuring DualSense controllers and the 2026 Steam C
 Gyro4U is based on [DS4U](https://git.yokai.digital/deadYokai/ds4u) by deadYokai
 ([GitHub mirror](https://github.com/deadYokai/ds4u)).
 
-![app preview](preview/app.png)
+![Gyro4U Steam Controller button mapping editor](preview/app.png)
 
 ## Features
 
