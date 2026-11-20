@@ -189,10 +189,7 @@ pub struct ThemeManager {
 
 impl ThemeManager {
     pub fn new() -> Self {
-        let dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("ds4u")
-            .join("themes");
+        let dir = crate::common::config_dir().join("themes");
 
         let _ = fs::create_dir_all(&dir);
         let mut mgr = Self {

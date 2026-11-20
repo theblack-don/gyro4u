@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Gyro4U
+GenericName=DualSense Controller Utility
+Comment=Configure DualSense controllers, remap inputs, and use gyro as a mouse
+Exec=gyro4u
+Icon=gyro4u
+Terminal=false
+Categories=Utility;Settings;HardwareSettings;
+Keywords=dualsense;controller;gyro;gamepad;playstation;
+StartupWMClass=gyro4u

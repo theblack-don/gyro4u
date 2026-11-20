@@ -1,7 +1,7 @@
 use egui::{Color32, RichText, Sense, Stroke, StrokeKind, Ui, vec2};
 
 use crate::app::DS4UApp;
-use crate::ui::widgets::{ROW_PAD_X, ds_label, ds_pill_button, ds_row, ds_section};
+use crate::ui::widgets::{ROW_PAD_X, ds_label, ds_pill_button, ds_row, ds_section, ds_toggle};
 
 impl DS4UApp {
     pub(crate) fn render_settings_section(&mut self, ui: &mut Ui) {
@@ -79,6 +79,13 @@ impl DS4UApp {
                 });
 
                 ds_section(ui, &c, "Daemon");
+
+                ds_row(ui, |ui| {
+                    ds_label(ui, "Start with app");
+                    if ds_toggle(ui, &c, &mut self.settings.auto_start_daemon).changed() {
+                        self.settings_manager.save(&self.settings);
+                    }
+                });
 
                 let alive = self.daemon_alive();
                 let via = self.using_daemon();

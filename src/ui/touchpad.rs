@@ -4,7 +4,7 @@ use crate::app::DS4UApp;
 use crate::common::TouchpadMode;
 use crate::inputs::{BTN_TOUCHPAD, TOUCHPAD_MAX_X, TOUCHPAD_MAX_Y};
 use crate::theme::ThemeColors;
-use crate::ui::widgets::{ROW_PAD_X, ds_label, ds_pill_button, ds_row, ds_section, ds_toggle};
+use crate::ui::widgets::{ROW_PAD_X, ds_label, ds_row, ds_section, ds_toggle};
 
 impl DS4UApp {
     fn render_touchpad_visual(ui: &mut Ui, app: &DS4UApp, c: &ThemeColors) {
@@ -71,30 +71,25 @@ impl DS4UApp {
             .show(ui, |ui| {
                 ds_section(ui, &c, "Touchpad");
                 ds_row(ui, |ui| {
-                    ds_label(ui, "Mode");
-                    ui.horizontal_wrapped(|ui| {
-                        for (m, label) in &[
-                            (TouchpadMode::Mouse, "Mouse"),
-                            (TouchpadMode::GesturesOnly, "Gestures only"),
-                            (TouchpadMode::PassThrough, "Pass-through"),
-                            (TouchpadMode::Disabled, "Disabled"),
-                        ] {
-                            let active = self.touchpad.mode == *m;
-                            if ds_pill_button(ui, &c, label, active).clicked() && !active {
-                                self.touchpad.mode = *m;
-                                changed = true;
-                            }
-                        }
-                    });
+                    ds_label(ui, "Two-finger gestures");
+                    let mut gestures = self.touchpad.mode == TouchpadMode::GesturesOnly;
+                    if ds_toggle(ui, &c, &mut gestures).changed() {
+                        self.touchpad.mode = if gestures {
+                            TouchpadMode::GesturesOnly
+                        } else {
+                            TouchpadMode::Disabled
+                        };
+                        changed = true;
+                    }
                 });
 
                 ui.horizontal(|ui| {
                     ui.add_space(ROW_PAD_X);
                     ui.label(
                         RichText::new(
-                            "Mouse and Pass-through use your desktop's touchpad handling. \
-                             Gestures only disables touchpad clicks and one-finger pointer \
-                             movement, but keeps two-finger gestures.",
+                            "gyro4u owns the touchpad: single-finger pointer motion is disabled. \
+                             Map the physical click under Mapping. Two-finger gestures are \
+                             optional.",
                         )
                         .size(12.0)
                         .italics()

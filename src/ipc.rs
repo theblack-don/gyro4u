@@ -47,7 +47,7 @@ pub type DaemonListener = transport::Listener;
 pub fn daemon_endpoint() -> PathBuf {
     dirs::runtime_dir()
         .unwrap_or_else(env::temp_dir)
-        .join("ds4u.socket")
+        .join("gyro4u.socket")
 }
 
 #[inline]

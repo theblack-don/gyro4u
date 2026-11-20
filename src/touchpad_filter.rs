@@ -1,6 +1,5 @@
 use std::{
     fs::{File, OpenOptions},
-    io::Write,
     mem::{size_of, zeroed},
     os::unix::io::AsRawFd,
     path::PathBuf,
@@ -15,13 +14,11 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::common::{DS_PID, DS_VID, DSE_PID, TouchpadMode};
+use crate::uinput::{
+    EV_ABS, EV_KEY, EV_SYN, INPUT_PROP_POINTER, InputEvent, SYN_REPORT, UinputDevice, UinputSpec,
+};
 
-const TAG: &str = "[ds4u touchpad]";
-
-const EV_SYN: u16 = 0x00;
-const EV_KEY: u16 = 0x01;
-const EV_ABS: u16 = 0x03;
-const SYN_REPORT: u16 = 0x00;
+const TAG: &str = "[gyro4u touchpad]";
 
 const BTN_TOOL_FINGER: u16 = 0x145;
 const BTN_TOUCH: u16 = 0x14a;
@@ -34,39 +31,7 @@ const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
 
-const INPUT_PROP_POINTER: u16 = 0x00;
 const INPUT_PROP_BUTTONPAD: u16 = 0x02;
-
-const BUS_USB: u16 = 0x03;
-const ABS_CNT: usize = 64;
-const UINPUT_MAX_NAME_SIZE: usize = 80;
-
-const UINPUT_IOCTL_BASE: u64 = b'U' as u64;
-const IOC_NONE: u64 = 0;
-const IOC_WRITE: u64 = 1;
-
-fn ioc(dir: u64, nr: u64, size: u64) -> u64 {
-    (dir << 30) | (UINPUT_IOCTL_BASE << 8) | nr | (size << 16)
-}
-
-fn ui_set_evbit() -> u64 {
-    ioc(IOC_WRITE, 100, size_of::<i32>() as u64)
-}
-fn ui_set_keybit() -> u64 {
-    ioc(IOC_WRITE, 101, size_of::<i32>() as u64)
-}
-fn ui_set_absbit() -> u64 {
-    ioc(IOC_WRITE, 103, size_of::<i32>() as u64)
-}
-fn ui_set_propbit() -> u64 {
-    ioc(IOC_WRITE, 110, size_of::<i32>() as u64)
-}
-fn ui_dev_create() -> u64 {
-    ioc(IOC_NONE, 1, 0)
-}
-fn ui_dev_destroy() -> u64 {
-    ioc(IOC_NONE, 2, 0)
-}
 
 fn iow(ty: u8, nr: u8, size: u32) -> u64 {
     (1u64 << 30) | ((size as u64) << 16) | ((ty as u64) << 8) | (nr as u64)
@@ -76,157 +41,36 @@ fn eviocgrab() -> u64 {
     iow(b'E', 0x90, size_of::<i32>() as u32)
 }
 
-#[repr(C)]
-struct InputId {
-    bustype: u16,
-    vendor: u16,
-    product: u16,
-    version: u16,
-}
-
-#[repr(C)]
-struct UinputUserDev {
-    name: [u8; UINPUT_MAX_NAME_SIZE],
-    id: InputId,
-    ff_effects_max: u32,
-    absmax: [i32; ABS_CNT],
-    absmin: [i32; ABS_CNT],
-    absfuzz: [i32; ABS_CNT],
-    absflat: [i32; ABS_CNT],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct InputEvent {
-    tv_sec: i64,
-    tv_usec: i64,
-    kind: u16,
-    code: u16,
-    value: i32,
-}
-
-struct UinputDevice {
-    file: File,
-    out: Vec<u8>,
-}
-
-impl UinputDevice {
-    fn create(
-        name: &[u8],
-        vendor: u16,
-        product: u16,
-        keys: &[u16],
-        axes: &[(u16, i32, i32)],
-        props: &[u16],
-    ) -> Result<Self> {
-        let file = OpenOptions::new()
-            .write(true)
-            .open("/dev/uinput")
-            .context("opening /dev/uinput")?;
-        let fd = file.as_raw_fd();
-
-        unsafe {
-            if libc::ioctl(fd, ui_set_evbit() as _, EV_KEY as i32) < 0 {
-                bail!("UI_SET_EVBIT(EV_KEY) failed");
-            }
-            if !axes.is_empty() && libc::ioctl(fd, ui_set_evbit() as _, EV_ABS as i32) < 0 {
-                bail!("UI_SET_EVBIT(EV_ABS) failed");
-            }
-            for key in keys {
-                if libc::ioctl(fd, ui_set_keybit() as _, *key as i32) < 0 {
-                    bail!("UI_SET_KEYBIT failed");
-                }
-            }
-            for (axis, _, _) in axes {
-                if libc::ioctl(fd, ui_set_absbit() as _, *axis as i32) < 0 {
-                    bail!("UI_SET_ABSBIT failed");
-                }
-            }
-            for prop in props {
-                if libc::ioctl(fd, ui_set_propbit() as _, *prop as i32) < 0 {
-                    bail!("UI_SET_PROPBIT failed");
-                }
-            }
-        }
-
-        let mut dev: UinputUserDev = unsafe { zeroed() };
-        dev.name[..name.len()].copy_from_slice(name);
-        dev.id = InputId {
-            bustype: BUS_USB,
-            vendor,
-            product,
-            version: 0x8111,
-        };
-        for (axis, min, max) in axes {
-            dev.absmin[*axis as usize] = *min;
-            dev.absmax[*axis as usize] = *max;
-        }
-
-        let bytes = unsafe {
-            std::slice::from_raw_parts(&dev as *const _ as *const u8, size_of::<UinputUserDev>())
-        };
-        (&file)
-            .write_all(bytes)
-            .context("writing uinput_user_dev")?;
-
-        if unsafe { libc::ioctl(fd, ui_dev_create() as _) } < 0 {
-            bail!("UI_DEV_CREATE failed");
-        }
-
-        Ok(Self {
-            file,
-            out: Vec::with_capacity(24 * 16),
-        })
-    }
-
-    fn touchpad(vendor: u16, product: u16) -> Result<Self> {
-        Self::create(
-            b"DS4U DualSense Touchpad\0",
-            vendor,
-            product,
-            &[BTN_TOOL_FINGER, BTN_TOUCH, BTN_TOOL_DOUBLETAP],
-            &[
-                (ABS_X, 0, 1919),
-                (ABS_Y, 0, 1079),
-                (ABS_MT_SLOT, 0, 1),
-                (ABS_MT_POSITION_X, 0, 1919),
-                (ABS_MT_POSITION_Y, 0, 1079),
-                (ABS_MT_TRACKING_ID, 0, 65535),
-            ],
-            &[INPUT_PROP_POINTER, INPUT_PROP_BUTTONPAD],
-        )
-    }
-
-    fn push(&mut self, kind: u16, code: u16, value: i32) {
-        let ev = InputEvent {
-            tv_sec: 0,
-            tv_usec: 0,
-            kind,
-            code,
-            value,
-        };
-        let bytes = unsafe {
-            std::slice::from_raw_parts(&ev as *const _ as *const u8, size_of::<InputEvent>())
-        };
-        self.out.extend_from_slice(bytes);
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if !self.out.is_empty() {
-            (&self.file).write_all(&self.out)?;
-            self.out.clear();
-        }
-        Ok(())
+fn errno_name(err: &std::io::Error) -> String {
+    match err.raw_os_error() {
+        Some(libc::EBUSY) => "EBUSY".into(),
+        Some(libc::EACCES) => "EACCES".into(),
+        Some(libc::EPERM) => "EPERM".into(),
+        Some(libc::ENODEV) => "ENODEV".into(),
+        Some(libc::ENOENT) => "ENOENT".into(),
+        Some(code) => format!("errno {code}"),
+        None => "unknown error".into(),
     }
 }
 
-impl Drop for UinputDevice {
-    fn drop(&mut self) {
-        let fd = self.file.as_raw_fd();
-        unsafe {
-            libc::ioctl(fd, ui_dev_destroy() as _);
-        }
-    }
+fn create_touchpad(vendor: u16, product: u16) -> Result<UinputDevice> {
+    UinputDevice::create(UinputSpec {
+        name: "Gyro4U DualSense Touchpad",
+        vendor,
+        product,
+        version: 0x8111,
+        keys: &[BTN_TOOL_FINGER, BTN_TOUCH, BTN_TOOL_DOUBLETAP],
+        axes: &[
+            (ABS_X, 0, 1919, 0),
+            (ABS_Y, 0, 1079, 0),
+            (ABS_MT_SLOT, 0, 1, 0),
+            (ABS_MT_POSITION_X, 0, 1919, 0),
+            (ABS_MT_POSITION_Y, 0, 1079, 0),
+            (ABS_MT_TRACKING_ID, 0, 65535, 0),
+        ],
+        rels: &[],
+        props: &[INPUT_PROP_POINTER, INPUT_PROP_BUTTONPAD],
+    })
 }
 
 const GESTURE_START_DISTANCE: i32 = 48;
@@ -417,50 +261,71 @@ impl TouchpadModeHandle {
         self.0.store(Self::encode(mode), Ordering::Relaxed);
     }
 
-    fn get(&self) -> TouchpadMode {
+    pub(crate) fn get(&self) -> TouchpadMode {
         Self::decode(self.0.load(Ordering::Relaxed))
     }
 
+    // Legacy Mouse/PassThrough modes are normalized so the filter always owns the node.
     fn encode(mode: TouchpadMode) -> u8 {
         match mode {
-            TouchpadMode::Disabled => 0,
-            TouchpadMode::Mouse => 1,
             TouchpadMode::GesturesOnly => 2,
-            TouchpadMode::PassThrough => 3,
+            TouchpadMode::Disabled | TouchpadMode::Mouse | TouchpadMode::PassThrough => 0,
         }
     }
 
     fn decode(value: u8) -> TouchpadMode {
         match value {
-            0 => TouchpadMode::Disabled,
             2 => TouchpadMode::GesturesOnly,
-            3 => TouchpadMode::PassThrough,
-            _ => TouchpadMode::Mouse,
+            _ => TouchpadMode::Disabled,
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TouchpadOwnedHandle(Arc<AtomicBool>);
+
+impl TouchpadOwnedHandle {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    pub(crate) fn set(&self, owned: bool) {
+        self.0.store(owned, Ordering::Relaxed);
+    }
+
+    pub(crate) fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
     }
 }
 
 pub(crate) struct TouchpadFilter {
     mode: TouchpadModeHandle,
+    owned: TouchpadOwnedHandle,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl TouchpadFilter {
     pub(crate) fn start(mode: TouchpadMode) -> Self {
-        Self::start_with_handle(TouchpadModeHandle::new(mode))
+        Self::start_with_handle(TouchpadModeHandle::new(mode), TouchpadOwnedHandle::new())
     }
 
-    pub(crate) fn start_with_handle(mode: TouchpadModeHandle) -> Self {
+    pub(crate) fn start_with_handle(mode: TouchpadModeHandle, owned: TouchpadOwnedHandle) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_mode = mode.clone();
+        let thread_owned = owned.clone();
         let thread_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("ds4u-touchpad".into())
-            .spawn(move || run(thread_mode, thread_stop))
+            .spawn(move || run(thread_mode, thread_owned, thread_stop))
             .ok();
 
-        Self { mode, stop, thread }
+        Self {
+            mode,
+            owned,
+            stop,
+            thread,
+        }
     }
 
     pub(crate) fn set_mode(&self, mode: TouchpadMode) {
@@ -474,6 +339,7 @@ impl Drop for TouchpadFilter {
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }
+        self.owned.set(false);
     }
 }
 
@@ -494,16 +360,23 @@ impl Active {
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
 
+        let fd = file.as_raw_fd();
+        if unsafe { libc::ioctl(fd, eviocgrab() as _, 1i32) } != 0 {
+            let err = std::io::Error::last_os_error();
+            bail!(
+                "could not grab {}: {} ({})",
+                path.display(),
+                errno_name(&err),
+                err
+            );
+        }
+        println!("{TAG} grabbed {}", path.display());
+
         let touch = if mode == TouchpadMode::GesturesOnly {
-            Some(UinputDevice::touchpad(vendor, product)?)
+            Some(create_touchpad(vendor, product)?)
         } else {
             None
         };
-
-        let fd = file.as_raw_fd();
-        if unsafe { libc::ioctl(fd, eviocgrab() as _, 1i32) } != 0 {
-            bail!("could not grab {}", path.display());
-        }
 
         Ok(Self {
             file,
@@ -622,7 +495,16 @@ fn find_touchpad() -> Option<(PathBuf, u16, u16)> {
     None
 }
 
-fn run(mode: TouchpadModeHandle, stop: Arc<AtomicBool>) {
+fn run(mode: TouchpadModeHandle, owned: TouchpadOwnedHandle, stop: Arc<AtomicBool>) {
+    struct ClearOwned<'a>(&'a TouchpadOwnedHandle);
+
+    impl Drop for ClearOwned<'_> {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+
+    let _clear_owned = ClearOwned(&owned);
     let mut active: Option<Active> = None;
     let mut reported_unavailable = false;
 
@@ -632,15 +514,10 @@ fn run(mode: TouchpadModeHandle, stop: Arc<AtomicBool>) {
         }
 
         let desired = mode.get();
-        if matches!(desired, TouchpadMode::Mouse | TouchpadMode::PassThrough) {
-            active = None;
-            reported_unavailable = false;
-            sleep(Duration::from_millis(200));
-            continue;
-        }
 
         if active.as_ref().is_some_and(|a| a.mode != desired) {
             active = None;
+            owned.set(false);
         }
 
         if active.is_none() {
@@ -648,9 +525,11 @@ fn run(mode: TouchpadModeHandle, stop: Arc<AtomicBool>) {
                 Ok(a) => {
                     println!("{TAG} mode {:?} active", desired);
                     reported_unavailable = false;
+                    owned.set(true);
                     active = Some(a);
                 }
                 Err(e) => {
+                    owned.set(false);
                     if !reported_unavailable {
                         eprintln!("{TAG} {e}");
                         reported_unavailable = true;
@@ -661,10 +540,47 @@ fn run(mode: TouchpadModeHandle, stop: Arc<AtomicBool>) {
             }
         }
 
-        if let Some(mut a) = active.take()
-            && let Err(e) = a.run(&mode, &stop)
-        {
-            eprintln!("{TAG} stopped: {e}");
+        if let Some(mut a) = active.take() {
+            let result = a.run(&mode, &stop);
+            owned.set(false);
+            if let Err(e) = result {
+                eprintln!("{TAG} stopped: {e}");
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_modes_normalize_to_disabled() {
+        for mode in [TouchpadMode::Mouse, TouchpadMode::PassThrough] {
+            let handle = TouchpadModeHandle::new(mode);
+            assert_eq!(handle.get(), TouchpadMode::Disabled);
+
+            handle.set(TouchpadMode::GesturesOnly);
+            handle.set(mode);
+            assert_eq!(handle.get(), TouchpadMode::Disabled);
+        }
+    }
+
+    #[test]
+    fn owned_modes_round_trip() {
+        for mode in [TouchpadMode::Disabled, TouchpadMode::GesturesOnly] {
+            let handle = TouchpadModeHandle::new(mode);
+            assert_eq!(handle.get(), mode);
+        }
+    }
+
+    #[test]
+    fn owned_handle_tracks_state() {
+        let owned = TouchpadOwnedHandle::new();
+        assert!(!owned.get());
+        owned.set(true);
+        assert!(owned.get());
+        owned.set(false);
+        assert!(!owned.get());
     }
 }

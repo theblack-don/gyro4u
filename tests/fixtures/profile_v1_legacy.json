@@ -1,0 +1,32 @@
+{
+  "name": "Legacy",
+  "lightbar_r": 0.1,
+  "lightbar_g": 0.2,
+  "lightbar_b": 0.3,
+  "lightbar_brightness": 200.0,
+  "player_leds": 1,
+  "mic_enabled": false,
+  "stick_left_curve": "Default",
+  "stick_right_curve": "Quick",
+  "trigger_mode": "Off",
+  "trigger_feedback_position": 0,
+  "haptic_intensity": 0,
+  "gyro_sensetivity": 1.0,
+  "touchpad_enabled": true,
+  "touchpad_mode": "Mouse",
+  "button_remapping": {
+    "Cross": "Circle",
+    "L1": "R1"
+  },
+  "disabled_buttons": ["L3"],
+  "stick_left_deadzone": 0.0,
+  "stick_right_deadzone": 0.0,
+  "trigger_left_deadband": {
+    "release": 0,
+    "full_stroke": 255
+  },
+  "trigger_right_deadband": {
+    "release": 0,
+    "full_stroke": 255
+  }
+}

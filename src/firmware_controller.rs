@@ -61,7 +61,7 @@ impl FirmwareController {
 impl Drop for FirmwareController {
     fn drop(&mut self) {
         if let Some(h) = self.thread.take() {
-            eprintln!("[ds4u] waiting for firmware thread to finish on shutdown...");
+            eprintln!("[gyro4u] waiting for firmware thread to finish on shutdown...");
             let _ = h.join();
         }
     }

@@ -1,5 +1,5 @@
 {
-  description = "DualSense 4 You";
+  description = "Gyro4U";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -31,8 +31,8 @@
             wayland
           ];
 
-          ds4u = pkgs.rustPlatform.buildRustPackage {
-            pname = "ds4u";
+          gyro4u = pkgs.rustPlatform.buildRustPackage {
+            pname = "gyro4u";
             version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
@@ -49,28 +49,59 @@
             ] ++ runtimeLibs;
 
             postFixup = ''
-              patchelf --add-rpath "${pkgs.lib.makeLibraryPath runtimeLibs}" "$out/bin/ds4u"
+              patchelf --add-rpath "${pkgs.lib.makeLibraryPath runtimeLibs}" "$out/bin/gyro4u"
+            '';
+
+            postInstall = ''
+              install -Dm644 assets/icon.svg $out/share/icons/hicolor/scalable/apps/gyro4u.svg
+              install -Dm644 assets/gyro4u.desktop $out/share/applications/gyro4u.desktop
             '';
 
             meta = with pkgs.lib; {
-              description = "DualSense 4 You";
-              homepage = "https://git.yokai.digital/deadYokai/ds4u";
+              description = "Gyro4U — DualSense controller utility";
+              homepage = "https://github.com/theblack-don/gyro4u";
               license = licenses.mit;
-              mainProgram = "ds4u";
+              mainProgram = "gyro4u";
               platforms = platforms.linux;
             };
           };
         in
         {
-          inherit ds4u;
-          default = ds4u;
+          inherit gyro4u;
+          default = gyro4u;
         }
       );
 
       apps = forAllSystems (pkgs: {
         default = {
           type = "app";
-          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.ds4u}/bin/ds4u";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.gyro4u}/bin/gyro4u";
+        };
+      });
+
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          packages = with pkgs; [
+            cargo
+            rustc
+            clippy
+            rustfmt
+            pkg-config
+            alsa-lib
+            openssl
+            udev
+            libxkbcommon
+            libx11
+            libxcursor
+            libxi
+            libxrandr
+            libxrender
+            libglvnd
+            vulkan-loader
+            wayland
+            evtest
+            libinput
+          ];
         };
       });
     };

@@ -104,6 +104,24 @@ impl DS4UApp {
             }
         };
 
+        if self.remap.capture.is_some() {
+            self.nav.reset_held();
+            self.nav.prev_buttons = buttons;
+            return;
+        }
+
+        if !ctx.input(|i| i.focused) {
+            self.nav.reset_held();
+            self.nav.prev_buttons = buttons;
+            ctx.data_mut(|d| {
+                let f = d.get_temp_mut_or_default::<NavFocus>(nav_focus_id());
+                f.enabled = false;
+                f.activate = false;
+                f.adjust = 0;
+            });
+            return;
+        }
+
         let prev = self.nav.prev_buttons;
         let now = Instant::now();
         let edge = |m: u32| buttons & m != 0 && prev & m == 0;
@@ -146,6 +164,7 @@ impl DS4UApp {
 
         ctx.data_mut(|d| {
             let f = d.get_temp_mut_or_default::<NavFocus>(nav_focus_id());
+            let was_enabled = f.enabled;
             if any {
                 f.enabled = true;
             }
@@ -156,7 +175,7 @@ impl DS4UApp {
                 let cur = f.index.min(f.count - 1) as i64;
                 f.index = (cur + move_focus as i64).clamp(0, max) as usize;
             }
-            if activate {
+            if activate && was_enabled {
                 f.activate = true;
             }
             f.adjust += adjust;

@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     pub theme_id: String,
     pub profile: String,
+    #[serde(default = "default_true")]
+    pub auto_start_daemon: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -13,6 +19,7 @@ impl Default for Settings {
         Self {
             theme_id: "default".into(),
             profile: String::new(),
+            auto_start_daemon: true,
         }
     }
 }
@@ -23,10 +30,7 @@ pub struct SettingsManager {
 
 impl SettingsManager {
     pub fn new() -> Self {
-        let path = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("ds4u")
-            .join("settings.json");
+        let path = crate::common::config_dir().join("settings.json");
 
         Self { path }
     }
@@ -47,5 +51,17 @@ impl SettingsManager {
         if let Ok(json) = serde_json::to_string_pretty(settings) {
             let _ = fs::write(&self.path, json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_default_auto_start_daemon_to_true() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"theme_id":"default","profile":""}"#).expect("parse");
+        assert!(parsed.auto_start_daemon);
     }
 }

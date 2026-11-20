@@ -1,7 +1,7 @@
 use egui::epaint::{PathShape, PathStroke};
 use egui::{
-    Color32, CornerRadius, Image, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
-    Vec2, include_image, pos2, vec2,
+    Align2, Color32, CornerRadius, FontId, Image, Painter, Pos2, Rect, RichText, Sense, Stroke,
+    StrokeKind, Ui, Vec2, include_image, pos2, vec2,
 };
 
 use crate::app::DS4UApp;
@@ -22,6 +22,12 @@ impl DS4UApp {
                     .strong()
                     .color(c.accent())
                     .extra_letter_spacing(2.0),
+            );
+            ui.label(
+                RichText::new("Physical controller state (pre-remap)")
+                    .size(12.0)
+                    .italics()
+                    .color(c.text_dim()),
             );
         });
         ui.add_space(20.0);
@@ -231,6 +237,24 @@ impl DS4UApp {
                 c.text(),
             );
 
+            let edge_r = 3.0 * scale;
+            for (bit, pos, label) in [
+                (BTN_EDGE_FN_LEFT, SVG_EDGE_FN_L, "Fn L"),
+                (BTN_EDGE_FN_RIGHT, SVG_EDGE_FN_R, "Fn R"),
+                (BTN_EDGE_PADDLE_LEFT, SVG_EDGE_PADDLE_L, "Paddle L"),
+                (BTN_EDGE_PADDLE_RIGHT, SVG_EDGE_PADDLE_R, "Paddle R"),
+            ] {
+                Self::render_edge_marker(
+                    &painter,
+                    map(pos.0, pos.1),
+                    edge_r,
+                    buttons & bit != 0,
+                    label,
+                    c.accent(),
+                    c.text_dim(),
+                );
+            }
+
             {
                 let tp_w = 46.0;
                 let tp_h = 26.0;
@@ -415,6 +439,52 @@ impl DS4UApp {
 
         p.circle_filled(center, radius, fill);
         p.circle_stroke(center, radius, Stroke::new(1.5, stroke_color));
+    }
+
+    fn render_edge_marker(
+        p: &Painter,
+        center: Pos2,
+        radius: f32,
+        pressed: bool,
+        label: &str,
+        accent_color: Color32,
+        dim_color: Color32,
+    ) {
+        p.circle_filled(
+            center,
+            radius,
+            if pressed {
+                accent_color
+            } else {
+                Color32::TRANSPARENT
+            },
+        );
+
+        let ring: Vec<Pos2> = (0..=24)
+            .map(|i| {
+                let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                center + vec2(a.cos(), a.sin()) * (radius + 2.0)
+            })
+            .collect();
+        let stroke = if pressed {
+            Stroke::new(1.6_f32, accent_color)
+        } else {
+            Stroke::new(1.0_f32, dim_color)
+        };
+        p.extend(egui::Shape::dashed_line(&ring, stroke, 4.0, 3.0));
+
+        if pressed {
+            p.circle_filled(center, (radius * 0.35).max(1.0), Color32::WHITE);
+        }
+
+        let font = ((radius / 3.0) * 6.5).clamp(9.0, 12.0);
+        p.text(
+            center + vec2(0.0, radius + 6.0),
+            Align2::CENTER_TOP,
+            label,
+            FontId::proportional(font),
+            if pressed { accent_color } else { dim_color },
+        );
     }
 
     fn render_live_stick(

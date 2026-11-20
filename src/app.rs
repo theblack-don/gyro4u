@@ -11,14 +11,18 @@ use crate::{
     daemon::DaemonManager,
     dualsense::{self, BatteryInfo, DualSense},
     firmware_controller::FirmwareController,
+    gyro::GyroConfig,
     input_poller::InputPoller,
     ipc::{IpcClient, socket_path},
+    keycodes,
     profiles::{Profile, ProfileManager, TriggerConfig},
+    remap::{Binding, BindingSlot, Key, StickConfig},
     settings::{Settings, SettingsManager},
     state::*,
+    stick_mouse::StickMouseConfig,
     theme::{Theme, ThemeManager},
     touchpad_filter::TouchpadFilter,
-    transform::{GyroProcessor, InputTransform},
+    transform::InputTransform,
     util::mlock,
 };
 
@@ -59,6 +63,7 @@ pub(crate) struct DS4UApp {
     pub(crate) gyro: GyroState,
     pub(crate) touchpad: TouchpadState,
     pub(crate) haptic_state: HapticState,
+    pub(crate) remap: RemapState,
 
     pub(crate) firmware: FirmwareController,
     pub(crate) input: InputPoller,
@@ -74,7 +79,6 @@ pub(crate) struct DS4UApp {
     pub(crate) input_transform: InputTransform,
 
     pub(crate) lightbar_effect: LightbarEffect,
-    pub(crate) local_gyro: GyroProcessor,
 
     pub(crate) daemon_alive_cached: bool,
     last_daemon_probe: Instant,
@@ -150,6 +154,11 @@ impl DS4UApp {
                 right_invert_x: false,
                 right_invert_y: false,
                 swap: false,
+                digital_left_deadzone: 0.4,
+                digital_right_deadzone: 0.4,
+                digital_left_analog: false,
+                digital_right_analog: false,
+                stick_mouse: StickMouseConfig::default(),
             },
 
             audio: AudioSettings {
@@ -163,12 +172,13 @@ impl DS4UApp {
             },
 
             gyro: GyroState {
-                processor: GyroProcessor::default(),
+                mouse: GyroConfig::default(),
+                calibration: None,
             },
 
             touchpad: TouchpadState {
                 show_overlay: true,
-                mode: TouchpadMode::Mouse,
+                mode: TouchpadMode::Disabled,
                 tap_to_click: true,
                 natural_scrolling: false,
                 sensitivity: 1.0,
@@ -179,6 +189,8 @@ impl DS4UApp {
                 strength: 0,
                 speed: 1.0,
             },
+
+            remap: RemapState::default(),
 
             firmware: FirmwareController::new(),
             input: InputPoller::new(),
@@ -195,8 +207,6 @@ impl DS4UApp {
 
             lightbar_effect: LightbarEffect::None,
 
-            local_gyro: GyroProcessor::default(),
-
             daemon_alive_cached: false,
             last_daemon_probe: Instant::now() - Duration::from_secs(10),
             haptic_stream: crate::haptics_stream::HapticStream::new(),
@@ -204,6 +214,10 @@ impl DS4UApp {
             daemon_raw_active: false,
             touchpad_filter: None,
         };
+
+        if app.settings.auto_start_daemon && !app.daemon_alive() {
+            app.start_daemon_process();
+        }
 
         app.check_for_controller();
 
@@ -392,7 +406,6 @@ impl DS4UApp {
         self.apply_microphone();
         self.apply_input_transform();
         self.apply_triggers();
-        self.apply_gyro();
         self.apply_haptic_pattern();
     }
 
@@ -613,17 +626,6 @@ impl DS4UApp {
         }
     }
 
-    pub(crate) fn apply_gyro(&mut self) {
-        let g = &self.gyro.processor;
-        self.local_gyro.enabled = g.enabled;
-        self.local_gyro.smoothing = g.smoothing;
-        self.local_gyro.sensitivity = g.sensitivity;
-
-        if let Some(be) = self.backend() {
-            be.set_gyro(g.enabled, g.smoothing, g.sensitivity);
-        }
-    }
-
     pub(crate) fn apply_player_leds(&mut self) {
         if let Some(be) = self.backend() {
             be.set_player_leds(self.player_leds);
@@ -685,6 +687,10 @@ impl DS4UApp {
     }
 
     pub(crate) fn load_profile(&mut self, profile: &Profile) {
+        self.load_profile_inner(profile, true);
+    }
+
+    fn load_profile_inner(&mut self, profile: &Profile, notify_daemon: bool) {
         self.lightbar.r = profile.lightbar_r;
         self.lightbar.g = profile.lightbar_g;
         self.lightbar.b = profile.lightbar_b;
@@ -703,11 +709,17 @@ impl DS4UApp {
         self.sticks.right_invert_x = profile.stick_right_invert_x;
         self.sticks.right_invert_y = profile.stick_right_invert_y;
         self.sticks.swap = profile.stick_swap;
+        self.sticks.digital_left_deadzone = profile.stick_digital.left_deadzone;
+        self.sticks.digital_right_deadzone = profile.stick_digital.right_deadzone;
+        self.sticks.digital_left_analog = profile.stick_digital.left_analog;
+        self.sticks.digital_right_analog = profile.stick_digital.right_analog;
+        self.sticks.stick_mouse = profile.stick_mouse.clone();
 
         self.triggers.left = profile.trigger_left_config.clone();
         self.triggers.right = profile.trigger_right_config.clone();
 
-        self.gyro.processor = profile.to_gyro_processor();
+        self.gyro.mouse = profile.gyro_mouse.clone();
+        self.gyro.calibration = None;
         self.touchpad.mode = if !profile.touchpad_enabled {
             TouchpadMode::Disabled
         } else {
@@ -722,6 +734,13 @@ impl DS4UApp {
         self.haptic_state.strength = profile.haptic_strength;
         self.haptic_state.speed = profile.haptic_speed;
 
+        self.remap.bindings = profile.button_bindings.clone();
+        self.remap.layers = profile.layers.clone();
+        self.remap.press_timing = profile.press_timing.clone();
+        self.remap.selected = None;
+        self.remap.selected_layer = None;
+        self.remap.capture = None;
+
         self.current_profile = Some(profile.clone());
 
         self.settings.profile = profile.name.clone();
@@ -732,15 +751,35 @@ impl DS4UApp {
         self.apply_microphone();
         self.apply_input_transform();
         self.apply_triggers();
-        self.apply_gyro();
         self.apply_haptic_pattern();
 
-        if let Some(ref ipc) = self.ipc.clone() {
+        if notify_daemon && let Some(ref ipc) = self.ipc.clone() {
             let _ = mlock(ipc).switch_profile(&profile.name);
         }
     }
 
+    fn sync_active_profile(&mut self) {
+        let Some(ipc) = self.ipc.clone() else {
+            return;
+        };
+        let Ok(name) = mlock(&ipc).get_active_profile() else {
+            return;
+        };
+        if name.is_empty()
+            || self
+                .current_profile
+                .as_ref()
+                .is_some_and(|p| p.name == name)
+        {
+            return;
+        }
+        if let Ok(profile) = self.profile_manager.load_profile(&name) {
+            self.load_profile_inner(&profile, false);
+        }
+    }
+
     pub(crate) fn sync_profile(&mut self) {
+        let stick_digital = self.stick_config();
         let Some(profile) = self.current_profile.as_mut() else {
             return;
         };
@@ -763,11 +802,13 @@ impl DS4UApp {
         profile.stick_right_invert_x = self.sticks.right_invert_x;
         profile.stick_right_invert_y = self.sticks.right_invert_y;
         profile.stick_swap = self.sticks.swap;
+        profile.stick_digital = stick_digital;
+        profile.stick_mouse = self.sticks.stick_mouse.clone();
 
         profile.trigger_left_config = self.triggers.left.clone();
         profile.trigger_right_config = self.triggers.right.clone();
 
-        profile.gyro = self.gyro.processor.clone();
+        profile.gyro_mouse = self.gyro.mouse.clone();
         profile.touchpad_enabled = !matches!(self.touchpad.mode, TouchpadMode::Disabled);
         profile.touchpad_mode = self.touchpad.mode;
         profile.touchpad_show_overlay = self.touchpad.show_overlay;
@@ -779,6 +820,10 @@ impl DS4UApp {
         profile.haptic_strength = self.haptic_state.strength;
         profile.haptic_speed = self.haptic_state.speed;
 
+        profile.button_bindings = self.remap.bindings.clone();
+        profile.layers = self.remap.layers.clone();
+        profile.press_timing = self.remap.press_timing.clone();
+
         if let Some(ref ipc) = self.ipc.clone() {
             let _ = mlock(ipc).save_profile(profile.clone());
         } else {
@@ -787,6 +832,10 @@ impl DS4UApp {
     }
 
     pub(crate) fn check_controller_connection(&mut self) {
+        if self.using_daemon() {
+            self.sync_active_profile();
+        }
+
         if self.firmware.updating {
             return;
         }
@@ -797,6 +846,17 @@ impl DS4UApp {
                 self.stop_input_polling();
                 self.disconnect_controller();
             }
+            return;
+        }
+
+        // Hand off a direct connection once a daemon owns the controller.
+        if self.daemon_alive()
+            && let Some(client) = self.daemon_manager.connect_new_client()
+            && matches!(mlock(&client).get_controller_info(), Ok(Some(_)))
+        {
+            self.stop_input_polling();
+            self.controller = None;
+            self.connect_via_daemon(client);
             return;
         }
 
@@ -822,6 +882,7 @@ impl DS4UApp {
 
     pub(crate) fn check_for_controller(&mut self) {
         self.last_connection_check = Instant::now();
+        self.daemon_manager.refresh();
 
         if self.daemon_manager.is_active()
             && self.ipc.is_none()
@@ -1028,6 +1089,15 @@ impl DS4UApp {
         self.firmware.thread = Some(handle);
     }
 
+    pub(crate) fn stick_config(&self) -> StickConfig {
+        StickConfig {
+            left_deadzone: self.sticks.digital_left_deadzone,
+            right_deadzone: self.sticks.digital_right_deadzone,
+            left_analog: self.sticks.digital_left_analog,
+            right_analog: self.sticks.digital_right_analog,
+        }
+    }
+
     pub(crate) fn apply_input_transform(&mut self) {
         let mut t = self
             .current_profile
@@ -1048,10 +1118,21 @@ impl DS4UApp {
         t.touchpad_mode = self.touchpad.mode;
         t.trigger_left = self.triggers.left.deadband.clone();
         t.trigger_right = self.triggers.right.deadband.clone();
+        t.button_bindings = self.remap.bindings.clone();
+        t.layers = self.remap.layers.clone();
+        t.press_timing = self.remap.press_timing.clone();
+        t.stick_digital = self.stick_config();
+        t.gyro_mouse = self.gyro.mouse.clone();
+        t.stick_mouse = self.sticks.stick_mouse.clone();
+        t.button_remap.clear();
+        t.disabled_buttons.clear();
+        t.normalize_bindings();
 
         self.input_transform = t.clone();
 
-        if let Some(filter) = &self.touchpad_filter {
+        if self.ipc.is_some() {
+            self.touchpad_filter = None;
+        } else if let Some(filter) = &self.touchpad_filter {
             filter.set_mode(self.touchpad.mode);
         }
         if let Some(be) = self.backend() {
@@ -1059,8 +1140,74 @@ impl DS4UApp {
         }
     }
 
+    pub(crate) fn handle_binding_capture(&mut self, ctx: &egui::Context) {
+        let Some((control, layer)) = self.remap.capture.as_ref().map(|c| (c.control, c.layer))
+        else {
+            return;
+        };
+
+        for event in ctx.input(|i| i.events.clone()) {
+            let egui::Event::Key {
+                pressed: true,
+                key,
+                physical_key,
+                repeat,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if repeat {
+                continue;
+            }
+            if key == egui::Key::Escape {
+                self.remap.capture = None;
+                ctx.request_repaint();
+                return;
+            }
+            let Some(name) = keycodes::from_egui(physical_key.unwrap_or(key)) else {
+                return;
+            };
+
+            // egui has no modifier key events; take held modifiers from the chord.
+            let mut names = Vec::new();
+            if modifiers.ctrl {
+                names.push("LeftCtrl");
+            }
+            if modifiers.shift {
+                names.push("LeftShift");
+            }
+            if modifiers.alt {
+                names.push("LeftAlt");
+            }
+            if modifiers.mac_cmd {
+                names.push("LeftMeta");
+            }
+            names.push(name);
+
+            let list = match layer {
+                Some(index) => match self.remap.layers.get_mut(index) {
+                    Some(layer) => layer.bindings.entry(control).or_default(),
+                    None => return,
+                },
+                None => self.remap.bindings.entry(control).or_default(),
+            };
+            for name in names {
+                if let Some(key) = Key::new(name) {
+                    list.push(BindingSlot::from(Binding::Key(key)));
+                }
+            }
+            self.remap.capture = None;
+            self.apply_input_transform();
+            self.sync_profile();
+            ctx.request_repaint();
+            return;
+        }
+    }
+
     fn start_touchpad_filter(&mut self) {
-        if self.touchpad_filter.is_some() {
+        if self.using_daemon() || self.touchpad_filter.is_some() {
             return;
         }
         self.touchpad_filter = Some(TouchpadFilter::start(self.touchpad.mode));
@@ -1147,7 +1294,7 @@ impl DS4UApp {
         let exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(e) => {
-                self.error_message = format!("Cannot locate ds4u binary: {}", e);
+                self.error_message = format!("Cannot locate gyro4u binary: {}", e);
                 return;
             }
         };

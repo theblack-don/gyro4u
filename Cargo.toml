@@ -1,11 +1,11 @@
 [package]
-name = "ds4u"
-version = "0.1.2"
+name = "gyro4u"
+version = "0.2.0"
 edition = "2024"
-description = "DualSense 4 You"
+description = "Gyro4U — DualSense controller utility"
 authors = [ "deadYokai" ]
 readme = "README.md"
-repository = "https://git.yokai.digital/deadYokai/ds4u"
+repository = "https://github.com/theblack-don/gyro4u"
 license = "MIT"
 keywords = [ "dualsense", "controller" ]
 

@@ -328,6 +328,20 @@ Please connect your controller via USB or Bluetooth."
             if b2 & 0x04 != 0 {
                 b |= BTN_MUTE;
             }
+            if self.product_id == DSE_PID {
+                if b2 & 0x10 != 0 {
+                    b |= BTN_EDGE_FN_LEFT;
+                }
+                if b2 & 0x20 != 0 {
+                    b |= BTN_EDGE_FN_RIGHT;
+                }
+                if b2 & 0x40 != 0 {
+                    b |= BTN_EDGE_PADDLE_LEFT;
+                }
+                if b2 & 0x80 != 0 {
+                    b |= BTN_EDGE_PADDLE_RIGHT;
+                }
+            }
 
             b
         };

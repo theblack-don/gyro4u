@@ -69,7 +69,20 @@ fn main() {
         (stick_l.1 + stick_r.1 + mic_btn.1) / 3.0,
     );
 
-    let derived: &[(&str, (f32, f32))] = &[("L2", l2), ("R2", r2), ("PS_BTN", ps_btn)];
+    let edge_fn_l = (stick_l.0, stick_l.1 + 10.0);
+    let edge_fn_r = (stick_r.0, stick_r.1 + 10.0);
+    let edge_paddle_l = (stick_l.0 - 10.0, stick_l.1 + 18.0);
+    let edge_paddle_r = (stick_r.0 + 10.0, stick_r.1 + 18.0);
+
+    let derived: &[(&str, (f32, f32))] = &[
+        ("L2", l2),
+        ("R2", r2),
+        ("PS_BTN", ps_btn),
+        ("EDGE_FN_L", edge_fn_l),
+        ("EDGE_FN_R", edge_fn_r),
+        ("EDGE_PADDLE_L", edge_paddle_l),
+        ("EDGE_PADDLE_R", edge_paddle_r),
+    ];
 
     for (name, (x, y)) in derived {
         push_const(&mut code, name, *x, *y);

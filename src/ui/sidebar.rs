@@ -8,6 +8,7 @@ use super::widgets;
 
 const NAV: &[(Section, &str)] = &[
     (Section::Inputs, "Inputs"),
+    (Section::Mapping, "Mapping"),
     (Section::Sticks, "Sticks"),
     (Section::Triggers, "Triggers"),
     (Section::Haptics, "Haptics"),
@@ -98,7 +99,7 @@ impl DS4UApp {
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| "Default".into());
             ui.label(
-                RichText::new(format!("DS4U // {}", prof))
+                RichText::new(format!("Gyro4U // {}", prof))
                     .size(15.0)
                     .color(Color32::from_rgba_unmultiplied(255, 255, 255, 115)),
             );
@@ -178,6 +179,7 @@ impl DS4UApp {
     pub(crate) fn render_header(&mut self, ui: &mut Ui) {
         let title = match self.active_section {
             Section::Inputs => "Controller Inputs",
+            Section::Mapping => "Button Mapping",
             Section::Sticks => "Analog Sticks",
             Section::Triggers => "Adaptive Triggers",
             Section::Haptics => "Haptics & Vibration",
@@ -206,7 +208,7 @@ impl DS4UApp {
         p.text(
             pos2(rect.min.x + 20.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
-            "DS4U",
+            "Gyro4U",
             egui::FontId::proportional(20.0),
             c.accent(),
         );

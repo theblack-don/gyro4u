@@ -1,4 +1,45 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use serde::{Deserialize, Serialize};
+
+pub fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("gyro4u")
+}
+
+pub fn ensure_config_migrated() {
+    let Some(base) = dirs::config_dir() else {
+        return;
+    };
+    let old = base.join("ds4u");
+    let new = base.join("gyro4u");
+
+    if new.exists() || !old.exists() {
+        return;
+    }
+
+    if let Err(e) = copy_config_dir(&old, &new) {
+        eprintln!("[gyro4u] warning: config migration failed: {e}");
+    }
+}
+
+fn copy_config_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_config_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
 
 pub const DS_VID: u16 = 0x054c;
 pub const DS_PID: u16 = 0x0ce6;

@@ -4,21 +4,17 @@
 
 ---
 
-[![Gitea](https://img.shields.io/badge/Gitea-Repo-black)](https://git.yokai.digital/deadYokai/ds4u)
-[![GitLab](https://img.shields.io/badge/GitLab-Mirror-orange)](https://gitlab.com/deadYokai/ds4u)
-[![GitHub](https://img.shields.io/badge/GitHub-Mirror-black)](https://github.com/deadYokai/ds4u)
+[![GitHub](https://img.shields.io/badge/GitHub-Repo-black)](https://github.com/theblack-don/gyro4u)
 
-[![AUR](https://img.shields.io/aur/version/ds4u?style=for-the-badge)](https://aur.archlinux.org/packages/ds4u)
-[![AURGIT](https://img.shields.io/aur/version/ds4u-git?style=for-the-badge)](https://aur.archlinux.org/packages/ds4u-git)
+# Gyro4U
 
-# DS4U - DualSense for You
-
-Native Linux Gui tool for configuring DualSense controllers.
+Native Linux GUI tool for configuring DualSense controllers.
 
 > [!note]
-> **DualSense Edge** support is wired in (device ID and firmware are handled) but  
-> is **not tested and not officially supported** yet. If you have problems with  
-> this device, please open an *Issue*.  
+> **DualSense Edge** is supported and tested, including the Edge paddles and Fn buttons.
+
+Gyro4U is based on [DS4U](https://git.yokai.digital/deadYokai/ds4u) by deadYokai
+([GitHub mirror](https://github.com/deadYokai/ds4u)).
 
 ![app preview](preview/app.png)
 
@@ -28,12 +24,26 @@ Native Linux Gui tool for configuring DualSense controllers.
 - Live input visualization (buttons, D-pad, sticks, triggers, touchpad)
 - Battery level and charging status
 - USB and Bluetooth connection, with automatic hotplug detection
+- DualSense Edge paddles and Fn buttons
+
+### Remapping
+- Remap buttons to gamepad buttons, keyboard keys, mouse buttons, or scroll wheel directions
+- Layers: hold an activator button to swap in a second set of bindings
+- Press types per binding: `Regular`, `Long Press`, `Double Tap`
+- Profile targets: bind a button to cycle or switch profiles
+- Digital stick directions (including WASD-style key output)
+- Right-stick mouse
 
 ### Analog sticks
 - Per-stick sensitivity curves
 - Inner and outer deadzones per stick
 - Invert X / Y per stick
 - Swap left/right sticks
+- Digital stick output with configurable deadzones
+
+### Gyroscope
+- Gyro-to-mouse output with activation modes (always, hold, toggle, touchpad)
+- Dots-per-360 calibration, sensitivity, acceleration, smoothing, and axis inversion
 
 ### Adaptive triggers
 - Independent left/right configuration
@@ -59,7 +69,7 @@ Native Linux Gui tool for configuring DualSense controllers.
 - Microphone on/off toggle
 
 ### Profiles
-- Save, load, switch and delete profiles (see [Profiles](#profiles-1))
+- Save, load, switch and delete profiles (see [Profiles](#profiles))
 - A profile captures everything: lightbar/LEDs, sticks, triggers, haptics, gyro,
   touchpad, mic, plus button remaps and disabled buttons
 - Switch/list/reload profiles from the [command line](#command-line-usage)
@@ -85,19 +95,35 @@ Native Linux Gui tool for configuring DualSense controllers.
 
 ## Installation
 
-### Arch Linux (AUR)
+### Nix (flakes)
 
-Released build:
-
-```sh
-yay -S ds4u
-```
-
-Latest git build:
+From the repository:
 
 ```sh
-yay -S ds4u-git
+nix profile install .#gyro4u
 ```
+
+Or directly from GitHub:
+
+```sh
+nix profile install github:theblack-don/gyro4u
+```
+
+The package installs the `Gyro4U` desktop entry and hicolor icon. See the
+[NixOS](#nixos) notes for `uinput` and udev setup.
+
+### Fedora / COPR
+
+A spec file is provided at `packaging/fedora/gyro4u.spec`. Create a COPR project
+from the GitHub repository and point it at that spec; once the project has built:
+
+```sh
+sudo dnf install gyro4u
+```
+
+The source tag `v0.2.0` must exist for the RPM `Source0` URL. COPR builds may
+need vendored crates or network access for Cargo; configure the project
+accordingly.
 
 ## Building
 
@@ -107,48 +133,71 @@ yay -S ds4u-git
 
 ### Build
 ```sh
-git clone https://gitlab.com/deadYokai/ds4u.git
-cd ds4u
+git clone https://github.com/theblack-don/gyro4u.git
+cd gyro4u
 cargo build --release
 ```
 
 ### Run
 ```sh
-./target/release/ds4u
+./target/release/gyro4u
+```
+
+### Nix
+
+```sh
+nix build .#
+./result/bin/gyro4u
+```
+
+Or run it directly:
+
+```sh
+nix run .#
 ```
 
 ### Device permissions
 
-To talk to the controller without running as root, install a `udev` rule that grants your user access to the DualSense `hidraw` device.  
-The AUR package does this for you.
+To talk to the controller without running as root, install a `udev` rule that
+grants your user access to the DualSense `hidraw` device and to `uinput`.
+The RPM package installs these files for you; when building from source or
+using Nix, install them manually (on NixOS use the configuration below).
 
-`/etc/udev/rules.d/70-ds4u.rules`:
+`/etc/udev/rules.d/70-gyro4u.rules`:
 
 ```
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0ce6", MODE="0664", GROUP="input", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0df2", MODE="0664", GROUP="input", TAG+="uaccess"
+KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
 ```
 
-Then reload the rules and reconnect the controller:
+`/etc/modules-load.d/gyro4u.conf`:
+
+```
+uinput
+```
+
+Then load the module and reload the rules, and reconnect the controller:
 
 ```sh
+sudo modprobe uinput
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 ## Command-line usage
 
-Running `ds4u` with no arguments launches the GUI.  
+Running `gyro4u` with no arguments launches the GUI.
 The following flags talk to a running daemon over its Unix socket:
 
 
 | Command | Description |
 |---------|-------------|
-| `ds4u` | Launch the GUI |
-| `ds4u --daemon` | Run as the background daemon |
-| `ds4u --status` | Show the connected controller (serial, product id, USB/BT) and battery |
-| `ds4u --list-profiles` | List saved profile names |
-| `ds4u --switch-profile <name>` | Switch the active profile |
-| `ds4u --reload-profile` | Reload the current profile from disk |
+| `gyro4u` | Launch the GUI |
+| `gyro4u --daemon` | Run as the background daemon |
+| `gyro4u --status` | Show the connected controller (serial, product id, USB/BT) and battery |
+| `gyro4u --list-profiles` | List saved profile names |
+| `gyro4u --switch-profile <name>` | Switch the active profile |
+| `gyro4u --reload-profile` | Reload the current profile from disk |
 
 
 The profile commands require the daemon to be running.
@@ -170,18 +219,18 @@ the live/animated features above need it.
 From the GUI (Settings), via the CLI, or as a service.
 
 ```sh
-ds4u --daemon
+gyro4u --daemon
 ```
 
-Or run as systemd service:
+Or run as a systemd user service (`gyro4u-daemon.service`):
 
 ```ini
 [Unit]
-Description=DS4U DualSense Daemon
+Description=Gyro4U daemon
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/local/bin/ds4u --daemon
+ExecStart=/usr/bin/gyro4u --daemon
 Restart=on-failure
 RestartSec=3
 
@@ -189,9 +238,32 @@ RestartSec=3
 WantedBy=default.target
 ```
 
+### NixOS
+
+Enable `uinput` and add the udev rules:
+
+```nix
+hardware.uinput.enable = true;
+
+services.udev.extraRules = ''
+  SUBSYSTEM=="hidraw", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0ce6", MODE="0664", GROUP="input", TAG+="uaccess"
+  SUBSYSTEM=="hidraw", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0df2", MODE="0664", GROUP="input", TAG+="uaccess"
+  KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
+'';
+```
+
+When running the daemon as a systemd user unit from a Nix profile, point it at
+the profile binary:
+
+```ini
+[Service]
+ExecStart=%h/.nix-profile/bin/gyro4u --daemon
+```
+
 ## Profiles
 
-Profiles are stored as JSON in `~/.config/ds4u/profiles/<name>.json`, and the filename is derived from the profile name.  
+Profiles are stored as JSON in `~/.config/gyro4u/profiles/<name>.json`, and the
+filename is derived from the profile name.
 The active profile name is recorded in `settings.json`. A `Default` profile is created automatically if none exists.
 
 Manage profiles from the GUI (the **Profiles** section) or from the [command line](#command-line-usage).
@@ -244,11 +316,13 @@ All color values are `[R, G, B]` in the 0–255 range.
 
 | Path | Contents |
 |------|----------|
-| `~/.config/ds4u/settings.json` | Active theme ID and active profile name |
-| `~/.config/ds4u/profiles/` | Saved profiles (`<name>.json`) |
-| `~/.config/ds4u/themes/` | Custom theme files (`<id>.json`) |
-| `$XDG_RUNTIME_DIR/ds4u.socket` | Daemon Unix socket |
+| `~/.config/gyro4u/settings.json` | Active theme ID and active profile name |
+| `~/.config/gyro4u/profiles/` | Saved profiles (`<name>.json`) |
+| `~/.config/gyro4u/themes/` | Custom theme files (`<id>.json`) |
+| `$XDG_RUNTIME_DIR/gyro4u.socket` | Daemon Unix socket |
 
+On first run, an existing `~/.config/ds4u` directory is copied to
+`~/.config/gyro4u`; the old directory is left untouched.
 
 ## Contributing
 
@@ -260,11 +334,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Todo
 - [ ] other possible issues
-- [ ] DualSense Egde support
+- [x] DualSense Edge support
 
 ## Support:
+Support the original DS4U author:
 [![MySite](https://img.shields.io/badge/yokai.digital-black?style=for-the-badge)](https://yokai.digital)
 [![Paypal](https://img.shields.io/badge/Paypal-black?style=for-the-badge&logo=paypal)](https://www.paypal.com/donate/?hosted_button_id=RLGYGXH4LZ8PC)
 [![Monobank](https://img.shields.io/badge/Monobank-black?style=for-the-badge)](https://send.monobank.ua/jar/9oVcUiHxPd)
 [![Liberapay](https://img.shields.io/liberapay/receives/deadYokai.svg?logo=liberapay&style=for-the-badge&logoColor=white&labelColor=black&color=orange&label=Liberapay)](https://liberapay.com/deadYokai/donate)
-

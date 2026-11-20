@@ -9,9 +9,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common::*,
+    gyro::GyroConfig,
     inputs::Button,
+    remap::{Binding, BindingSlot, Layer, PressTiming, PressType, StickConfig},
+    stick_mouse::StickMouseConfig,
     transform::{GyroProcessor, InputTransform, TriggerDeadband},
 };
+
+pub const CURRENT_PROFILE_SCHEMA: u32 = 3;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct TriggerConfig {
@@ -167,6 +172,16 @@ pub struct Profile {
     pub touchpad_sensitivity: f32,
     pub button_remapping: HashMap<Button, Button>,
     pub disabled_buttons: HashSet<Button>,
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub button_bindings: HashMap<Button, Vec<BindingSlot>>,
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub press_timing: PressTiming,
+    #[serde(default)]
+    pub stick_digital: StickConfig,
     pub stick_left_deadzone: f32,
     pub stick_right_deadzone: f32,
     pub trigger_left_deadband: TriggerDeadband,
@@ -195,6 +210,12 @@ pub struct Profile {
     pub gyro: GyroProcessor,
 
     #[serde(default)]
+    pub gyro_mouse: GyroConfig,
+
+    #[serde(default)]
+    pub stick_mouse: StickMouseConfig,
+
+    #[serde(default)]
     pub haptic_pattern: HapticPattern,
     #[serde(default)]
     pub haptic_strength: u8, // 0-7
@@ -206,8 +227,56 @@ pub struct Profile {
 }
 
 impl Profile {
+    pub fn migrate_legacy(&mut self) {
+        if self.schema_version >= CURRENT_PROFILE_SCHEMA {
+            return;
+        }
+        if self.schema_version < 2 && self.button_bindings.is_empty() {
+            for (from, to) in &self.button_remapping {
+                self.button_bindings
+                    .insert(*from, vec![BindingSlot::from(Binding::Gamepad(*to))]);
+            }
+            for btn in &self.disabled_buttons {
+                self.button_bindings.insert(*btn, Vec::new());
+            }
+        }
+        if self.schema_version < 3
+            && matches!(
+                self.touchpad_mode,
+                TouchpadMode::Mouse | TouchpadMode::PassThrough
+            )
+        {
+            self.touchpad_mode = TouchpadMode::Disabled;
+        }
+        self.schema_version = CURRENT_PROFILE_SCHEMA;
+    }
+
+    pub fn rebuild_legacy_bindings(&mut self) {
+        self.button_remapping.clear();
+        self.disabled_buttons.clear();
+        for (from, list) in &self.button_bindings {
+            if from.is_stick_dir() {
+                continue;
+            }
+            match list.as_slice() {
+                [
+                    BindingSlot {
+                        binding: Binding::Gamepad(to),
+                        press: PressType::Regular,
+                    },
+                ] => {
+                    self.button_remapping.insert(*from, *to);
+                }
+                [] => {
+                    self.disabled_buttons.insert(*from);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn to_input_transform(&self) -> InputTransform {
-        InputTransform {
+        let mut transform = InputTransform {
             left_curve: self.stick_left_curve.clone(),
             right_curve: self.stick_right_curve.clone(),
             left_deadzone: self.stick_left_deadzone,
@@ -223,9 +292,17 @@ impl Profile {
             trigger_right: self.trigger_right_config.deadband.clone(),
             button_remap: self.button_remapping.clone(),
             disabled_buttons: self.disabled_buttons.clone(),
+            button_bindings: self.button_bindings.clone(),
+            layers: self.layers.clone(),
+            press_timing: self.press_timing.clone(),
+            stick_digital: self.stick_digital.clone(),
             touchpad_enabled: self.touchpad_enabled,
             touchpad_mode: self.touchpad_mode,
-        }
+            gyro_mouse: self.gyro_mouse.clone(),
+            stick_mouse: self.stick_mouse.clone(),
+        };
+        transform.normalize_bindings();
+        transform
     }
 
     pub fn to_gyro_processor(&self) -> GyroProcessor {
@@ -259,10 +336,7 @@ impl ProfileManager {
     }
 
     fn get_profiles_dir() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("ds4u")
-            .join("profiles")
+        crate::common::config_dir().join("profiles")
     }
 
     pub fn ensure_default_exists(&self) -> Profile {
@@ -310,7 +384,10 @@ impl ProfileManager {
         Self::validate_profile_name(&profile.name)?;
         let filename = format!("{}.json", Self::sanitize_filename(&profile.name));
         let path = self.profiles_dir.join(filename);
-        let json = serde_json::to_string_pretty(profile)?;
+        let mut profile = profile.clone();
+        profile.schema_version = CURRENT_PROFILE_SCHEMA;
+        profile.rebuild_legacy_bindings();
+        let json = serde_json::to_string_pretty(&profile)?;
         fs::write(path, json)?;
         Ok(())
     }
@@ -322,7 +399,8 @@ impl ProfileManager {
             bail!("Profile '{}' not found", name);
         }
         let json = fs::read_to_string(path)?;
-        let profile: Profile = serde_json::from_str(&json)?;
+        let mut profile: Profile = serde_json::from_str(&json)?;
+        profile.migrate_legacy();
         Ok(profile)
     }
 
@@ -351,8 +429,9 @@ impl ProfileManager {
                 let path = e.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("json")
                     && let Ok(json) = fs::read_to_string(&path)
-                    && let Ok(profile) = serde_json::from_str::<Profile>(&json)
+                    && let Ok(mut profile) = serde_json::from_str::<Profile>(&json)
                 {
+                    profile.migrate_legacy();
                     profiles.push(profile);
                 }
             }
@@ -385,12 +464,17 @@ impl Default for Profile {
             haptic_intensity: 0,
             gyro_sensetivity: 1.0,
             touchpad_enabled: true,
-            touchpad_mode: TouchpadMode::Mouse,
+            touchpad_mode: TouchpadMode::Disabled,
             touchpad_tap_to_click: true,
             touchpad_natural_scrolling: false,
             touchpad_sensitivity: 1.0,
             button_remapping: HashMap::new(),
             disabled_buttons: HashSet::new(),
+            schema_version: CURRENT_PROFILE_SCHEMA,
+            button_bindings: HashMap::new(),
+            layers: Vec::new(),
+            press_timing: PressTiming::default(),
+            stick_digital: StickConfig::default(),
             stick_left_deadzone: 0.0,
             stick_right_deadzone: 0.0,
             trigger_left_deadband: TriggerDeadband::default(),
@@ -409,11 +493,294 @@ impl Default for Profile {
 
             gyro: GyroProcessor::default(),
 
+            gyro_mouse: GyroConfig::default(),
+
+            stick_mouse: StickMouseConfig::default(),
+
             haptic_pattern: HapticPattern::None,
             haptic_strength: 0,
             haptic_speed: 1.0,
 
             touchpad_show_overlay: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEGACY: &str = include_str!("../tests/fixtures/profile_v1_legacy.json");
+
+    fn slot(binding: Binding) -> BindingSlot {
+        BindingSlot::from(binding)
+    }
+
+    fn legacy() -> Profile {
+        serde_json::from_str(LEGACY).expect("legacy fixture parses")
+    }
+
+    #[test]
+    fn legacy_profile_migrates_to_bindings() {
+        let mut p = legacy();
+        assert_eq!(p.schema_version, 0);
+        assert!(p.button_bindings.is_empty());
+        assert_eq!(p.stick_digital, StickConfig::default());
+
+        p.migrate_legacy();
+
+        assert_eq!(p.schema_version, CURRENT_PROFILE_SCHEMA);
+        assert_eq!(
+            p.button_bindings.get(&Button::Cross),
+            Some(&vec![slot(Binding::Gamepad(Button::Circle))])
+        );
+        assert_eq!(
+            p.button_bindings.get(&Button::L1),
+            Some(&vec![slot(Binding::Gamepad(Button::R1))])
+        );
+        assert!(
+            p.button_bindings
+                .get(&Button::L3)
+                .is_some_and(Vec::is_empty)
+        );
+        assert_eq!(p.touchpad_mode, TouchpadMode::Disabled);
+    }
+
+    #[test]
+    fn schema_2_legacy_touchpad_modes_migrate_to_disabled() {
+        for mode in [TouchpadMode::Mouse, TouchpadMode::PassThrough] {
+            let mut p = legacy();
+            p.schema_version = 2;
+            p.touchpad_mode = mode;
+            p.button_bindings =
+                HashMap::from([(Button::Cross, vec![slot(Binding::Gamepad(Button::Circle))])]);
+
+            p.migrate_legacy();
+
+            assert_eq!(p.schema_version, CURRENT_PROFILE_SCHEMA);
+            assert_eq!(p.touchpad_mode, TouchpadMode::Disabled);
+            assert_eq!(
+                p.button_bindings.get(&Button::Cross),
+                Some(&vec![slot(Binding::Gamepad(Button::Circle))])
+            );
+            assert_eq!(p.button_bindings.len(), 1);
+        }
+    }
+
+    #[test]
+    fn schema_2_supported_touchpad_modes_are_preserved() {
+        for mode in [TouchpadMode::GesturesOnly, TouchpadMode::Disabled] {
+            let mut p = legacy();
+            p.schema_version = 2;
+            p.touchpad_mode = mode;
+
+            p.migrate_legacy();
+
+            assert_eq!(p.schema_version, CURRENT_PROFILE_SCHEMA);
+            assert_eq!(p.touchpad_mode, mode);
+        }
+    }
+
+    #[test]
+    fn migrated_profile_round_trips() {
+        let mut p = legacy();
+        p.migrate_legacy();
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.schema_version, CURRENT_PROFILE_SCHEMA);
+        assert_eq!(back.button_bindings, p.button_bindings);
+    }
+
+    #[test]
+    fn rebuild_legacy_bindings_restores_simple_bindings() {
+        let mut p = legacy();
+        p.migrate_legacy();
+
+        p.rebuild_legacy_bindings();
+
+        assert_eq!(p.button_remapping.len(), 2);
+        assert_eq!(
+            p.button_remapping.get(&Button::Cross),
+            Some(&Button::Circle)
+        );
+        assert_eq!(p.button_remapping.get(&Button::L1), Some(&Button::R1));
+        assert_eq!(p.disabled_buttons.len(), 1);
+        assert!(p.disabled_buttons.contains(&Button::L3));
+    }
+
+    #[test]
+    fn rebuild_skips_multi_bindings() {
+        let mut p = legacy();
+        p.button_bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot(Binding::Gamepad(Button::Circle)),
+                slot(Binding::Gamepad(Button::Square)),
+            ],
+        )]);
+
+        p.rebuild_legacy_bindings();
+
+        assert!(p.button_remapping.is_empty());
+        assert!(p.disabled_buttons.is_empty());
+    }
+
+    #[test]
+    fn rebuild_skips_profile_bindings() {
+        use crate::remap::ProfileAction;
+
+        let mut p = legacy();
+        let binding = Binding::Profile(ProfileAction::Switch("Main".to_string()));
+        p.button_bindings = HashMap::from([(Button::Cross, vec![slot(binding.clone())])]);
+
+        p.rebuild_legacy_bindings();
+
+        assert!(p.button_remapping.is_empty());
+        assert!(p.disabled_buttons.is_empty());
+        assert_eq!(
+            p.button_bindings.get(&Button::Cross),
+            Some(&vec![slot(binding)])
+        );
+    }
+
+    #[test]
+    fn rebuild_skips_stick_direction_bindings() {
+        let mut p = legacy();
+        p.button_bindings = HashMap::from([
+            (Button::Cross, vec![slot(Binding::Gamepad(Button::Circle))]),
+            (
+                Button::LeftStickUp,
+                vec![slot(Binding::Gamepad(Button::DPadUp))],
+            ),
+        ]);
+
+        p.rebuild_legacy_bindings();
+
+        assert_eq!(p.button_remapping.len(), 1);
+        assert_eq!(
+            p.button_remapping.get(&Button::Cross),
+            Some(&Button::Circle)
+        );
+        assert!(!p.button_remapping.contains_key(&Button::LeftStickUp));
+    }
+
+    #[test]
+    fn rebuild_skips_non_regular_slots() {
+        let mut p = legacy();
+        p.button_bindings = HashMap::from([
+            (
+                Button::Cross,
+                vec![BindingSlot {
+                    binding: Binding::Gamepad(Button::Circle),
+                    press: PressType::LongPress,
+                }],
+            ),
+            (
+                Button::Circle,
+                vec![BindingSlot {
+                    binding: Binding::Gamepad(Button::Square),
+                    press: PressType::DoubleTap,
+                }],
+            ),
+        ]);
+
+        p.rebuild_legacy_bindings();
+
+        assert!(p.button_remapping.is_empty());
+        assert!(p.disabled_buttons.is_empty());
+    }
+
+    #[test]
+    fn press_timing_copies_into_transform_and_round_trips() {
+        let mut p = Profile::default();
+        p.press_timing = PressTiming {
+            long_press_ms: 500,
+            double_tap_ms: 250,
+        };
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.press_timing, p.press_timing);
+        assert_eq!(p.to_input_transform().press_timing, p.press_timing);
+    }
+
+    #[test]
+    fn gyro_mouse_copies_into_transform() {
+        let mut p = legacy();
+        p.gyro_mouse.enabled = true;
+        p.gyro_mouse.dots_per_360 = 1234.0;
+
+        let transform = p.to_input_transform();
+
+        assert_eq!(transform.gyro_mouse, p.gyro_mouse);
+    }
+
+    #[test]
+    fn stick_mouse_copies_into_transform() {
+        let mut p = legacy();
+        assert_eq!(p.stick_mouse, StickMouseConfig::default());
+        p.stick_mouse.enabled = true;
+        p.stick_mouse.speed = 900.0;
+
+        let transform = p.to_input_transform();
+
+        assert_eq!(transform.stick_mouse, p.stick_mouse);
+    }
+
+    #[test]
+    fn stick_digital_copies_into_transform() {
+        let mut p = legacy();
+        p.stick_digital = StickConfig {
+            left_deadzone: 0.55,
+            right_deadzone: 0.25,
+            left_analog: true,
+            right_analog: false,
+        };
+
+        let transform = p.to_input_transform();
+
+        assert_eq!(transform.stick_digital, p.stick_digital);
+    }
+
+    #[test]
+    fn profile_layers_copy_into_transform_and_round_trip() {
+        let mut p = Profile::default();
+        assert!(p.layers.is_empty());
+
+        let layer = Layer {
+            activator: Button::L1,
+            bindings: HashMap::from([(
+                Button::Cross,
+                vec![slot(Binding::Gamepad(Button::Triangle))],
+            )]),
+        };
+        p.layers = vec![layer.clone()];
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.layers, vec![layer.clone()]);
+
+        assert_eq!(p.to_input_transform().layers, vec![layer.clone()]);
+
+        p.rebuild_legacy_bindings();
+        assert_eq!(p.layers, vec![layer]);
+    }
+
+    #[test]
+    fn new_bindings_win_over_legacy_fields() {
+        let mut p = legacy();
+        p.button_bindings =
+            HashMap::from([(Button::Cross, vec![slot(Binding::Gamepad(Button::Square))])]);
+
+        p.migrate_legacy();
+
+        assert_eq!(
+            p.button_bindings.get(&Button::Cross),
+            Some(&vec![slot(Binding::Gamepad(Button::Square))])
+        );
+        assert!(!p.button_bindings.contains_key(&Button::L1));
+        assert_eq!(p.schema_version, CURRENT_PROFILE_SCHEMA);
     }
 }

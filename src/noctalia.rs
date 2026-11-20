@@ -38,16 +38,12 @@ impl Seed {
         let window_bg = self.window_bg.unwrap_or([7, 7, 34]);
         let text = self.text.unwrap_or([243, 237, 247]);
         let accent = self.accent.unwrap_or([255, 245, 155]);
-        let panel_bg = self
-            .panel_bg
-            .unwrap_or_else(|| mix(window_bg, text, 0.07));
+        let panel_bg = self.panel_bg.unwrap_or_else(|| mix(window_bg, text, 0.07));
         let widget_hovered = self.widget_hovered.unwrap_or(accent);
         let widget_inactive = self
             .widget_inactive
             .unwrap_or_else(|| mix(panel_bg, text, 0.18));
-        let text_dim = self
-            .text_dim
-            .unwrap_or_else(|| mix(window_bg, text, 0.42));
+        let text_dim = self.text_dim.unwrap_or_else(|| mix(window_bg, text, 0.42));
 
         ThemeColors {
             window_bg,
@@ -137,7 +133,12 @@ fn gtk_seed() -> Seed {
             success: lookup(&map, &["success_color", "success-color"]),
             error: lookup(
                 &map,
-                &["error_bg_color", "error-bg-color", "error_color", "error-color"],
+                &[
+                    "error_bg_color",
+                    "error-bg-color",
+                    "error_color",
+                    "error-color",
+                ],
             ),
             warning: lookup(&map, &["warning_color", "warning-color"]),
             ..Seed::default()
@@ -218,7 +219,10 @@ fn parse_ini(text: &str) -> HashMap<(String, String), String> {
             continue;
         }
 
-        if let Some(inner) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+        if let Some(inner) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
             section = inner.trim().to_ascii_lowercase();
         } else if let Some((key, value)) = line.split_once('=') {
             map.insert(

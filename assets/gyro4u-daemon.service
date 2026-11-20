@@ -1,0 +1,11 @@
+[Unit]
+Description=Gyro4U daemon
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/gyro4u --daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

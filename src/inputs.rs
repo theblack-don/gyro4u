@@ -26,6 +26,10 @@ pub const BTN_R3: u32 = 1 << 11;
 pub const BTN_PS: u32 = 1 << 12;
 pub const BTN_TOUCHPAD: u32 = 1 << 13;
 pub const BTN_MUTE: u32 = 1 << 14;
+pub const BTN_EDGE_FN_LEFT: u32 = 1 << 15;
+pub const BTN_EDGE_FN_RIGHT: u32 = 1 << 16;
+pub const BTN_EDGE_PADDLE_LEFT: u32 = 1 << 17;
+pub const BTN_EDGE_PADDLE_RIGHT: u32 = 1 << 18;
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy)]
 pub struct TouchPoint {
@@ -52,8 +56,9 @@ pub struct ControllerState {
     pub touch_points: [TouchPoint; 2],
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Debug, Default)]
 pub enum Button {
+    #[default]
     Create,
     L3,
     R3,
@@ -73,10 +78,116 @@ pub enum Button {
     PS,
     Touchpad,
     Mute,
+    EdgeFnLeft,
+    EdgeFnRight,
+    EdgePaddleLeft,
+    EdgePaddleRight,
+    LeftStickUp,
+    LeftStickDown,
+    LeftStickLeft,
+    LeftStickRight,
+    RightStickUp,
+    RightStickDown,
+    RightStickLeft,
+    RightStickRight,
 }
 
+pub const GAMEPAD_TARGETS: [Button; 23] = [
+    Button::Cross,
+    Button::Circle,
+    Button::Square,
+    Button::Triangle,
+    Button::DPadUp,
+    Button::DPadRight,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::L3,
+    Button::R3,
+    Button::Create,
+    Button::Options,
+    Button::PS,
+    Button::Mute,
+    Button::Touchpad,
+    Button::EdgeFnLeft,
+    Button::EdgeFnRight,
+    Button::EdgePaddleLeft,
+    Button::EdgePaddleRight,
+];
+
+pub const ALL_BUTTONS: [Button; 31] = [
+    Button::Cross,
+    Button::Circle,
+    Button::Square,
+    Button::Triangle,
+    Button::DPadUp,
+    Button::DPadRight,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::L3,
+    Button::R3,
+    Button::Create,
+    Button::Options,
+    Button::PS,
+    Button::Mute,
+    Button::Touchpad,
+    Button::EdgeFnLeft,
+    Button::EdgeFnRight,
+    Button::EdgePaddleLeft,
+    Button::EdgePaddleRight,
+    Button::LeftStickUp,
+    Button::LeftStickDown,
+    Button::LeftStickLeft,
+    Button::LeftStickRight,
+    Button::RightStickUp,
+    Button::RightStickDown,
+    Button::RightStickLeft,
+    Button::RightStickRight,
+];
+
 impl Button {
-    pub fn to_bitmask(&self) -> Option<u32> {
+    pub fn is_stick_dir(&self) -> bool {
+        matches!(
+            self,
+            Button::LeftStickUp
+                | Button::LeftStickDown
+                | Button::LeftStickLeft
+                | Button::LeftStickRight
+                | Button::RightStickUp
+                | Button::RightStickDown
+                | Button::RightStickLeft
+                | Button::RightStickRight
+        )
+    }
+
+    pub fn is_left_stick(&self) -> bool {
+        matches!(
+            self,
+            Button::LeftStickUp
+                | Button::LeftStickDown
+                | Button::LeftStickLeft
+                | Button::LeftStickRight
+        )
+    }
+
+    pub fn is_right_stick(&self) -> bool {
+        matches!(
+            self,
+            Button::RightStickUp
+                | Button::RightStickDown
+                | Button::RightStickLeft
+                | Button::RightStickRight
+        )
+    }
+
+    pub fn to_bitmask(self) -> Option<u32> {
         match self {
             Button::Square => Some(BTN_SQUARE),
             Button::Cross => Some(BTN_CROSS),
@@ -93,7 +204,79 @@ impl Button {
             Button::Options => Some(BTN_OPTIONS),
             Button::Touchpad => Some(BTN_TOUCHPAD),
             Button::Mute => Some(BTN_MUTE),
+            Button::EdgeFnLeft => Some(BTN_EDGE_FN_LEFT),
+            Button::EdgeFnRight => Some(BTN_EDGE_FN_RIGHT),
+            Button::EdgePaddleLeft => Some(BTN_EDGE_PADDLE_LEFT),
+            Button::EdgePaddleRight => Some(BTN_EDGE_PADDLE_RIGHT),
             Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight => None,
+            Button::LeftStickUp
+            | Button::LeftStickDown
+            | Button::LeftStickLeft
+            | Button::LeftStickRight
+            | Button::RightStickUp
+            | Button::RightStickDown
+            | Button::RightStickLeft
+            | Button::RightStickRight => None,
+        }
+    }
+
+    pub fn is_pressed(&self, s: &ControllerState) -> bool {
+        let dirs = [
+            matches!(s.dpad, DPAD_N | DPAD_NE | DPAD_NW),
+            matches!(s.dpad, DPAD_E | DPAD_NE | DPAD_SE),
+            matches!(s.dpad, DPAD_S | DPAD_SE | DPAD_SW),
+            matches!(s.dpad, DPAD_W | DPAD_NW | DPAD_SW),
+        ];
+        match self {
+            Button::DPadUp => dirs[0],
+            Button::DPadRight => dirs[1],
+            Button::DPadDown => dirs[2],
+            Button::DPadLeft => dirs[3],
+            Button::LeftStickUp
+            | Button::LeftStickDown
+            | Button::LeftStickLeft
+            | Button::LeftStickRight
+            | Button::RightStickUp
+            | Button::RightStickDown
+            | Button::RightStickLeft
+            | Button::RightStickRight => false,
+            _ => self.to_bitmask().is_some_and(|m| s.buttons & m != 0),
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Button::Cross => "Cross",
+            Button::Circle => "Circle",
+            Button::Square => "Square",
+            Button::Triangle => "Triangle",
+            Button::DPadUp => "D-Pad Up",
+            Button::DPadRight => "D-Pad Right",
+            Button::DPadDown => "D-Pad Down",
+            Button::DPadLeft => "D-Pad Left",
+            Button::L1 => "L1",
+            Button::R1 => "R1",
+            Button::L2 => "L2",
+            Button::R2 => "R2",
+            Button::L3 => "L3",
+            Button::R3 => "R3",
+            Button::Create => "Create",
+            Button::Options => "Options",
+            Button::PS => "PS",
+            Button::Mute => "Mute",
+            Button::Touchpad => "Touchpad",
+            Button::EdgeFnLeft => "Fn Left",
+            Button::EdgeFnRight => "Fn Right",
+            Button::EdgePaddleLeft => "Paddle Left",
+            Button::EdgePaddleRight => "Paddle Right",
+            Button::LeftStickUp => "Left Stick Up",
+            Button::LeftStickDown => "Left Stick Down",
+            Button::LeftStickLeft => "Left Stick Left",
+            Button::LeftStickRight => "Left Stick Right",
+            Button::RightStickUp => "Right Stick Up",
+            Button::RightStickDown => "Right Stick Down",
+            Button::RightStickLeft => "Right Stick Left",
+            Button::RightStickRight => "Right Stick Right",
         }
     }
 }

@@ -913,27 +913,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
-name = "ds4u"
-version = "0.1.2"
-dependencies = [
- "alsa",
- "anyhow",
- "crc",
- "dirs",
- "eframe",
- "egui",
- "egui_extras",
- "hidapi",
- "libc",
- "rfd",
- "roxmltree 0.21.1",
- "serde",
- "serde_json",
- "udev",
- "ureq",
-]
-
-[[package]]
 name = "ecolor"
 version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1571,6 +1550,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags 2.12.1",
+]
+
+[[package]]
+name = "gyro4u"
+version = "0.2.0"
+dependencies = [
+ "alsa",
+ "anyhow",
+ "crc",
+ "dirs",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "hidapi",
+ "libc",
+ "rfd",
+ "roxmltree 0.21.1",
+ "serde",
+ "serde_json",
+ "udev",
+ "ureq",
 ]
 
 [[package]]

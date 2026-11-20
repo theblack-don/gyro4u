@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::common::TouchpadMode;
+use crate::gyro::GyroConfig;
+use crate::remap::{Binding, BindingSlot, Layer, PressTiming, StickConfig};
+use crate::stick_mouse::StickMouseConfig;
 use crate::{common::SensitivityCurve, inputs::*};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -47,11 +50,24 @@ pub struct InputTransform {
 
     pub button_remap: HashMap<Button, Button>,
     pub disabled_buttons: HashSet<Button>,
+    #[serde(default)]
+    pub button_bindings: HashMap<Button, Vec<BindingSlot>>,
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub press_timing: PressTiming,
+
+    #[serde(default)]
+    pub stick_digital: StickConfig,
 
     #[serde(default)]
     pub touchpad_enabled: bool,
     #[serde(default)]
     pub touchpad_mode: TouchpadMode,
+    #[serde(default)]
+    pub gyro_mouse: GyroConfig,
+    #[serde(default)]
+    pub stick_mouse: StickMouseConfig,
 }
 
 impl Default for InputTransform {
@@ -72,14 +88,33 @@ impl Default for InputTransform {
             trigger_right: TriggerDeadband::default(),
             button_remap: HashMap::new(),
             disabled_buttons: HashSet::new(),
+            button_bindings: HashMap::new(),
+            layers: Vec::new(),
+            press_timing: PressTiming::default(),
+            stick_digital: StickConfig::default(),
             touchpad_enabled: true,
             touchpad_mode: TouchpadMode::Mouse,
+            gyro_mouse: GyroConfig::default(),
+            stick_mouse: StickMouseConfig::default(),
         }
     }
 }
 
 impl InputTransform {
-    pub fn apply(&self, s: &mut ControllerState) {
+    pub fn normalize_bindings(&mut self) {
+        if !self.button_bindings.is_empty() {
+            return;
+        }
+        for (from, to) in &self.button_remap {
+            self.button_bindings
+                .insert(*from, vec![BindingSlot::from(Binding::Gamepad(*to))]);
+        }
+        for btn in &self.disabled_buttons {
+            self.button_bindings.insert(*btn, Vec::new());
+        }
+    }
+
+    pub fn apply_axes(&self, s: &mut ControllerState) {
         if self.stick_swap {
             std::mem::swap(&mut s.left_x, &mut s.right_x);
             std::mem::swap(&mut s.left_y, &mut s.right_y);
@@ -118,32 +153,6 @@ impl InputTransform {
         );
         s.l2 = apply_trigger(s.l2, &self.trigger_left);
         s.r2 = apply_trigger(s.r2, &self.trigger_right);
-
-        if !self.button_remap.is_empty() || !self.disabled_buttons.is_empty() {
-            let (b, d) = remap_buttons(
-                s.buttons,
-                s.dpad,
-                &self.button_remap,
-                &self.disabled_buttons,
-            );
-            s.buttons = b;
-            s.dpad = d;
-        }
-
-        let should_zero = match self.touchpad_mode {
-            TouchpadMode::Disabled => true,
-            TouchpadMode::GesturesOnly => s.touch_count < 2,
-            TouchpadMode::Mouse | TouchpadMode::PassThrough => false,
-        };
-
-        if should_zero {
-            for p in s.touch_points.iter_mut() {
-                p.active = false;
-                p.x = 0;
-                p.y = 0;
-            }
-            s.touch_count = 0;
-        }
     }
 }
 
@@ -256,103 +265,4 @@ fn apply_trigger(raw: u8, db: &TriggerDeadband) -> u8 {
         return 255;
     }
     ((raw - db.release) as f32 / (full - db.release) as f32 * 255.0).round() as u8
-}
-
-fn dpad_to_dirs(dpad: u8) -> [bool; 4] {
-    match dpad {
-        DPAD_N => [true, false, false, false],
-        DPAD_NE => [true, true, false, false],
-        DPAD_E => [false, true, false, false],
-        DPAD_SE => [false, true, true, false],
-        DPAD_S => [false, false, true, false],
-        DPAD_SW => [false, false, true, true],
-        DPAD_W => [false, false, false, true],
-        DPAD_NW => [true, false, false, true],
-        _ => [false, false, false, false],
-    }
-}
-
-fn dirs_to_dpad(d: [bool; 4]) -> u8 {
-    match d {
-        [true, false, false, false] => DPAD_N,
-        [true, true, false, false] => DPAD_NE,
-        [false, true, false, false] => DPAD_E,
-        [false, true, true, false] => DPAD_SE,
-        [false, false, true, false] => DPAD_S,
-        [false, false, true, true] => DPAD_SW,
-        [false, false, false, true] => DPAD_W,
-        [true, false, false, true] => DPAD_NW,
-        _ => DPAD_NEUTRAL,
-    }
-}
-
-fn encode_button(btn: &Button, out: &mut u32, dirs: &mut [bool; 4]) {
-    match btn {
-        Button::Square => *out |= BTN_SQUARE,
-        Button::Cross => *out |= BTN_CROSS,
-        Button::Circle => *out |= BTN_CIRCLE,
-        Button::Triangle => *out |= BTN_TRIANGLE,
-        Button::L1 => *out |= BTN_L1,
-        Button::R1 => *out |= BTN_R1,
-        Button::L2 => *out |= BTN_L2,
-        Button::R2 => *out |= BTN_R2,
-        Button::Create => *out |= BTN_CREATE,
-        Button::Options => *out |= BTN_OPTIONS,
-        Button::L3 => *out |= BTN_L3,
-        Button::R3 => *out |= BTN_R3,
-        Button::PS => *out |= BTN_PS,
-        Button::Touchpad => *out |= BTN_TOUCHPAD,
-        Button::Mute => *out |= BTN_MUTE,
-        Button::DPadUp => dirs[0] = true,
-        Button::DPadRight => dirs[1] = true,
-        Button::DPadDown => dirs[2] = true,
-        Button::DPadLeft => dirs[3] = true,
-    }
-}
-
-fn remap_buttons(
-    buttons: u32,
-    dpad: u8,
-    remap: &HashMap<Button, Button>,
-    disabled: &HashSet<Button>,
-) -> (u32, u8) {
-    let dirs = dpad_to_dirs(dpad);
-
-    let active: [(Button, bool); 19] = [
-        (Button::Square, buttons & BTN_SQUARE != 0),
-        (Button::Cross, buttons & BTN_CROSS != 0),
-        (Button::Circle, buttons & BTN_CIRCLE != 0),
-        (Button::Triangle, buttons & BTN_TRIANGLE != 0),
-        (Button::L1, buttons & BTN_L1 != 0),
-        (Button::R1, buttons & BTN_R1 != 0),
-        (Button::L2, buttons & BTN_L2 != 0),
-        (Button::R2, buttons & BTN_R2 != 0),
-        (Button::Create, buttons & BTN_CREATE != 0),
-        (Button::Options, buttons & BTN_OPTIONS != 0),
-        (Button::L3, buttons & BTN_L3 != 0),
-        (Button::R3, buttons & BTN_R3 != 0),
-        (Button::PS, buttons & BTN_PS != 0),
-        (Button::Touchpad, buttons & BTN_TOUCHPAD != 0),
-        (Button::Mute, buttons & BTN_MUTE != 0),
-        (Button::DPadUp, dirs[0]),
-        (Button::DPadRight, dirs[1]),
-        (Button::DPadDown, dirs[2]),
-        (Button::DPadLeft, dirs[3]),
-    ];
-
-    let mut out_buttons: u32 = 0;
-    let mut out_dirs = [false; 4];
-
-    for (btn, pressed) in &active {
-        if !pressed {
-            continue;
-        }
-        if disabled.contains(btn) {
-            continue;
-        }
-        let target = remap.get(btn).unwrap_or(btn);
-        encode_button(target, &mut out_buttons, &mut out_dirs);
-    }
-
-    (out_buttons, dirs_to_dpad(out_dirs))
 }

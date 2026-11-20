@@ -4,7 +4,7 @@ use std::os::unix::io::AsRawFd;
 
 use crate::common::{DS_PID, DS_VID, DSE_PID};
 
-const TAG: &str = "[ds4u daemon]";
+const TAG: &str = "[gyro4u daemon]";
 
 fn iow(ty: u8, nr: u8, size: u32) -> u64 {
     (1u64 << 30) | ((size as u64) << 16) | ((ty as u64) << 8) | (nr as u64)
@@ -62,6 +62,16 @@ impl InputGrab {
                 .property_value("ID_INPUT_TOUCHPAD")
                 .and_then(|v| v.to_str())
                 == Some("1")
+            {
+                continue;
+            }
+
+            // Only the gamepad node; motion sensors, the touchpad and the
+            // headset jack keep their normal userspace access.
+            if dev
+                .property_value("ID_INPUT_JOYSTICK")
+                .and_then(|v| v.to_str())
+                != Some("1")
             {
                 continue;
             }

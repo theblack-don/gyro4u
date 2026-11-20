@@ -13,6 +13,7 @@ use hidapi::HidApi;
 use crate::{
     common::{HapticPattern, LightbarEffect, TouchpadMode},
     dualsense::{DualSense, HAPTICS_PACKET_FRAMES, HAPTICS_SAMPLE_RATE},
+    gyro::GyroRuntime,
     haptics_stream::generate_packet,
     input_grab::InputGrab,
     inputs::ControllerState,
@@ -21,14 +22,18 @@ use crate::{
         cleanup_endpoint, daemon_endpoint,
     },
     profiles::ProfileManager,
+    remap::{AuxOutput, Binding, ProfileAction, RemapEngine},
     settings::SettingsManager,
-    touchpad_filter::{TouchpadFilter, TouchpadModeHandle},
+    stick_mouse::StickMouseRuntime,
+    touchpad_filter::{TouchpadFilter, TouchpadModeHandle, TouchpadOwnedHandle},
     transform::{GyroProcessor, InputTransform},
     util::{mlock, rlock, wait_cv, wlock},
     virtual_gamepad::VirtualGamepad,
+    virtual_keyboard::VirtualKeyboard,
+    virtual_mouse::VirtualMouse,
 };
 
-const TAG: &str = "[ds4u daemon]";
+const TAG: &str = "[gyro4u daemon]";
 
 pub struct DaemonManager {
     client: Option<Arc<Mutex<IpcClient>>>,
@@ -43,6 +48,13 @@ impl DaemonManager {
 
     pub fn is_active(&self) -> bool {
         self.client.is_some()
+    }
+
+    pub fn refresh(&mut self) {
+        if self.client.is_none() {
+            let addr = daemon_endpoint();
+            self.client = IpcClient::try_connect(&addr).map(|c| Arc::new(Mutex::new(c)));
+        }
     }
 
     pub fn connect_new_client(&self) -> Option<Arc<Mutex<IpcClient>>> {
@@ -85,10 +97,12 @@ struct DaemonState {
     device: Mutex<Option<DualSense>>,
     grab: Mutex<Option<InputGrab>>,
     update_in_progress: AtomicBool,
+    output_reset: AtomicBool,
     inner: RwLock<DaemonInner>,
     hotplug: (Mutex<bool>, Condvar),
     latest_input: Mutex<Option<LatestInput>>,
     touchpad_mode: TouchpadModeHandle,
+    touchpad_owned: TouchpadOwnedHandle,
 }
 
 impl DaemonState {
@@ -97,6 +111,7 @@ impl DaemonState {
             device: Mutex::new(None),
             grab: Mutex::new(None),
             update_in_progress: AtomicBool::new(false),
+            output_reset: AtomicBool::new(false),
             inner: RwLock::new(DaemonInner {
                 active_transform: InputTransform::default(),
                 active_effect: LightbarEffect::None,
@@ -113,6 +128,7 @@ impl DaemonState {
             hotplug: (Mutex::new(false), Condvar::new()),
             latest_input: Mutex::new(None),
             touchpad_mode: TouchpadModeHandle::new(TouchpadMode::Mouse),
+            touchpad_owned: TouchpadOwnedHandle::new(),
         })
     }
 }
@@ -142,10 +158,13 @@ fn apply_profile_to_state(state: &Arc<DaemonState>, name: &str) -> String {
     };
 
     let mut inner = wlock(&state.inner);
-    inner.active_transform = p.to_input_transform();
+    let mut transform = p.to_input_transform();
+    transform.normalize_bindings();
+    inner.active_transform = transform;
     state
         .touchpad_mode
         .set(inner.active_transform.touchpad_mode);
+    state.output_reset.store(true, Ordering::SeqCst);
     let r = (p.lightbar_r * 255.0) as u8;
     let g = (p.lightbar_g * 255.0) as u8;
     let b = (p.lightbar_b * 255.0) as u8;
@@ -182,8 +201,77 @@ fn push_triggers_to_device(state: &Arc<DaemonState>) {
     }
 }
 
+fn switch_profile(state: &Arc<DaemonState>, name: &str) -> String {
+    let loaded = apply_profile_to_state(state, name);
+    wlock(&state.inner).active_profile_name = loaded.clone();
+    let sm = SettingsManager::new();
+    let mut settings = sm.load();
+    settings.profile = loaded.clone();
+    sm.save(&settings);
+    {
+        let (color, leds, mic) = {
+            let i = rlock(&state.inner);
+            (i.lightbar_color, i.player_leds, i.mic_enabled)
+        };
+        let (r, g, b, br) = color;
+        if let Some(ds) = mlock(&state.device).as_mut() {
+            let _ = ds.set_lightbar(r, g, b, br);
+            let _ = ds.set_player_leds(leds);
+            let _ = ds.set_mic(mic);
+        }
+    }
+    push_triggers_to_device(state);
+    println!("{} switched to profile '{}'", TAG, loaded);
+    loaded
+}
+
+fn cycle_profile(state: &Arc<DaemonState>) -> String {
+    let active = rlock(&state.inner).active_profile_name.clone();
+    let profiles = ProfileManager::new().list_profiles();
+    let next = if profiles.is_empty() {
+        "Default".to_string()
+    } else if let Some(i) = profiles.iter().position(|p| p.name == active) {
+        profiles[(i + 1) % profiles.len()].name.clone()
+    } else {
+        profiles[0].name.clone()
+    };
+    switch_profile(state, &next)
+}
+
 pub fn run_daemon() {
+    use std::os::unix::io::AsRawFd;
+
     let addr = daemon_endpoint();
+
+    let lock_path = dirs::runtime_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("gyro4u.lock");
+    let instance_lock = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{} cannot open {}: {}", TAG, lock_path.display(), e);
+            return;
+        }
+    };
+    if unsafe { libc::flock(instance_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EWOULDBLOCK) => println!("{} daemon already running", TAG),
+            _ => eprintln!("{} cannot lock {}: {}", TAG, lock_path.display(), err),
+        }
+        return;
+    }
+    let _instance_lock = instance_lock;
+
+    if std::os::unix::net::UnixStream::connect(&addr).is_ok() {
+        println!("{} daemon already running", TAG);
+        return;
+    }
 
     cleanup_endpoint(&addr);
 
@@ -207,7 +295,10 @@ pub fn run_daemon() {
         println!("{} profile '{}' loaded", TAG, loaded);
     }
 
-    let _touchpad_filter = TouchpadFilter::start_with_handle(state.touchpad_mode.clone());
+    let _touchpad_filter = TouchpadFilter::start_with_handle(
+        state.touchpad_mode.clone(),
+        state.touchpad_owned.clone(),
+    );
 
     {
         let s = Arc::clone(&state);
@@ -256,14 +347,62 @@ enum Poll {
     Data((u16, u16), Option<crate::dualsense::PolledInput>),
 }
 
+fn transform_has_binding(transform: &InputTransform, pred: impl Fn(&Binding) -> bool) -> bool {
+    transform
+        .button_bindings
+        .values()
+        .flatten()
+        .chain(
+            transform
+                .layers
+                .iter()
+                .flat_map(|layer| layer.bindings.values().flatten()),
+        )
+        .map(|slot| &slot.binding)
+        .any(pred)
+}
+
+fn release_aux(keyboard: &mut Option<VirtualKeyboard>, mouse: &mut Option<VirtualMouse>) {
+    if let Some(keyboard) = keyboard.as_mut() {
+        let _ = keyboard.release_all();
+    }
+    if let Some(mouse) = mouse.as_mut() {
+        let _ = mouse.release_all();
+    }
+}
+
 fn gamepad_loop(state: Arc<DaemonState>) {
     let mut pad: Option<VirtualGamepad> = None;
     let mut pad_ids: Option<(u16, u16)> = None;
     let mut pad_disabled = false;
+    let mut remap = RemapEngine::new();
+    let mut aux = AuxOutput::default();
+    let mut gyro_runtime = GyroRuntime::new();
+    let mut stick_mouse = StickMouseRuntime::new();
+    let mut keyboard: Option<VirtualKeyboard> = None;
+    let mut mouse: Option<VirtualMouse> = None;
+    let mut keyboard_disabled = false;
+    let mut mouse_disabled = false;
 
     loop {
         sleep(Duration::from_millis(1));
+
+        if state.output_reset.swap(false, Ordering::SeqCst) {
+            release_aux(&mut keyboard, &mut mouse);
+            gyro_runtime.reset();
+            stick_mouse.reset();
+            if let Some(pad) = pad.as_mut() {
+                pad.reset();
+            }
+        }
+
         if state.update_in_progress.load(Ordering::Relaxed) {
+            release_aux(&mut keyboard, &mut mouse);
+            pad = None;
+            pad_ids = None;
+            remap.reset();
+            gyro_runtime.reset();
+            stick_mouse.reset();
             sleep(Duration::from_millis(20));
             continue;
         }
@@ -284,11 +423,23 @@ fn gamepad_loop(state: Arc<DaemonState>) {
 
         let (ids, polled) = match poll {
             Poll::NoDevice => {
+                release_aux(&mut keyboard, &mut mouse);
+                pad = None;
+                pad_ids = None;
+                remap.reset();
+                gyro_runtime.reset();
+                stick_mouse.reset();
                 sleep(Duration::from_millis(20));
                 continue;
             }
             Poll::Failed => {
                 println!("{} input read failed - dropping handle", TAG);
+                release_aux(&mut keyboard, &mut mouse);
+                pad = None;
+                pad_ids = None;
+                remap.reset();
+                gyro_runtime.reset();
+                stick_mouse.reset();
                 *mlock(&state.device) = None;
                 signal_hotplug(&state);
                 continue;
@@ -298,6 +449,8 @@ fn gamepad_loop(state: Arc<DaemonState>) {
 
         if !pad_disabled && pad_ids != Some(ids) {
             pad = None;
+            gyro_runtime.reset();
+            stick_mouse.reset();
             match VirtualGamepad::new(ids.0, ids.1) {
                 Ok(p) => {
                     println!("{} virtual gamepad {:04x}:{:04x}", TAG, ids.0, ids.1);
@@ -319,10 +472,94 @@ fn gamepad_loop(state: Arc<DaemonState>) {
             at: Instant::now(),
         });
 
-        if let Some(pad) = pad.as_mut() {
-            let mut st = p.state;
-            rlock(&state.inner).active_transform.apply(&mut st);
-            let _ = pad.update(&st);
+        let Some(pad) = pad.as_mut() else { continue };
+
+        let (transform, touchpad_allowed) = {
+            let inner = rlock(&state.inner);
+            let touchpad_allowed = state.touchpad_owned.get()
+                && matches!(
+                    state.touchpad_mode.get(),
+                    TouchpadMode::Disabled | TouchpadMode::GesturesOnly
+                );
+            (inner.active_transform.clone(), touchpad_allowed)
+        };
+
+        let wants_keyboard = transform_has_binding(&transform, |b| matches!(b, Binding::Key(_)));
+        if wants_keyboard && !keyboard_disabled && keyboard.is_none() {
+            match VirtualKeyboard::new() {
+                Ok(device) => {
+                    println!("{} virtual keyboard ready", TAG);
+                    keyboard = Some(device);
+                }
+                Err(e) => {
+                    eprintln!("{} keyboard disabled: {}", TAG, e);
+                    keyboard_disabled = true;
+                }
+            }
+        }
+
+        let wants_mouse = transform.stick_mouse.enabled
+            || transform.gyro_mouse.enabled
+            || transform_has_binding(&transform, |b| {
+                matches!(b, Binding::Mouse(_) | Binding::Wheel(_))
+            });
+        if wants_mouse && !mouse_disabled && mouse.is_none() {
+            match VirtualMouse::new() {
+                Ok(device) => {
+                    println!("{} virtual mouse ready", TAG);
+                    mouse = Some(device);
+                }
+                Err(e) => {
+                    eprintln!("{} mouse disabled: {}", TAG, e);
+                    mouse_disabled = true;
+                }
+            }
+        }
+
+        let gyro_rel =
+            gyro_runtime.process(&p.state, &transform.gyro_mouse, state.touchpad_owned.get());
+        let stick_rel = stick_mouse.process(
+            (p.state.right_x, p.state.right_y),
+            &transform.stick_mouse,
+            p.state.sensor_timestamp,
+        );
+        let raw_left = (p.state.left_x, p.state.left_y);
+        let raw_right = (p.state.right_x, p.state.right_y);
+        let mut st = p.state;
+        transform.apply_axes(&mut st);
+        aux.clear();
+        remap.apply(
+            &mut st,
+            &transform.button_bindings,
+            &transform.layers,
+            &transform.press_timing,
+            Instant::now(),
+            touchpad_allowed,
+            &transform.stick_digital,
+            transform.stick_mouse.enabled,
+            raw_left,
+            raw_right,
+            &mut aux,
+        );
+        aux.rel = (gyro_rel.0 + stick_rel.0, gyro_rel.1 + stick_rel.1);
+        let _ = pad.update(&st);
+        if let Some(keyboard) = keyboard.as_mut() {
+            let _ = keyboard.apply(&aux.keys);
+        }
+        if let Some(mouse) = mouse.as_mut() {
+            let _ = mouse.apply(&aux.mouse_buttons, aux.rel, aux.wheel);
+        }
+
+        // Apply after this tick's outputs; the next tick picks up the new profile.
+        if let Some(action) = aux.profile.take() {
+            match action {
+                ProfileAction::Switch(name) => {
+                    switch_profile(&state, &name);
+                }
+                ProfileAction::Cycle => {
+                    cycle_profile(&state);
+                }
+            }
         }
     }
 }
@@ -502,9 +739,24 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 send(&mut writer, DaemonResponse::Ok);
             }
 
-            DaemonCommand::SetInputTransform { transform } => {
+            DaemonCommand::SetInputTransform { mut transform } => {
+                transform.normalize_bindings();
                 state.touchpad_mode.set(transform.touchpad_mode);
-                wlock(&state.inner).active_transform = transform;
+                let changed = {
+                    let mut inner = wlock(&state.inner);
+                    let changed = inner.active_transform.button_bindings
+                        != transform.button_bindings
+                        || inner.active_transform.layers != transform.layers
+                        || inner.active_transform.press_timing != transform.press_timing
+                        || inner.active_transform.stick_digital != transform.stick_digital
+                        || inner.active_transform.gyro_mouse != transform.gyro_mouse
+                        || inner.active_transform.stick_mouse != transform.stick_mouse;
+                    inner.active_transform = transform;
+                    changed
+                };
+                if changed {
+                    state.output_reset.store(true, Ordering::SeqCst);
+                }
                 send(&mut writer, DaemonResponse::Ok);
             }
 
@@ -512,6 +764,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 let transform = InputTransform::default();
                 state.touchpad_mode.set(transform.touchpad_mode);
                 wlock(&state.inner).active_transform = transform;
+                state.output_reset.store(true, Ordering::SeqCst);
                 send(&mut writer, DaemonResponse::Ok);
             }
 
@@ -591,26 +844,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
             }
 
             DaemonCommand::SwitchProfile { name } => {
-                let loaded = apply_profile_to_state(&state, &name);
-                wlock(&state.inner).active_profile_name = loaded.clone();
-                let sm = SettingsManager::new();
-                let mut settings = sm.load();
-                settings.profile = loaded.clone();
-                sm.save(&settings);
-                {
-                    let (color, leds, mic) = {
-                        let i = rlock(&state.inner);
-                        (i.lightbar_color, i.player_leds, i.mic_enabled)
-                    };
-                    let (r, g, b, br) = color;
-                    if let Some(ds) = mlock(&state.device).as_mut() {
-                        let _ = ds.set_lightbar(r, g, b, br);
-                        let _ = ds.set_player_leds(leds);
-                        let _ = ds.set_mic(mic);
-                    }
-                }
-                push_triggers_to_device(&state);
-                println!("{} switched to profile '{}'", TAG, loaded);
+                switch_profile(&state, &name);
                 send(&mut writer, DaemonResponse::Ok);
             }
 
@@ -667,7 +901,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
             DaemonCommand::GetInputState => match fresh_input(&state) {
                 Some(l) => {
                     let mut s = l.state;
-                    rlock(&state.inner).active_transform.apply(&mut s);
+                    rlock(&state.inner).active_transform.apply_axes(&mut s);
                     send(&mut writer, DaemonResponse::InputState(s));
                 }
                 None => send(&mut writer, no_input_resp(&state)),
@@ -956,7 +1190,7 @@ fn dispatch(ds: &mut DualSense, cmd: DaemonCommand, transform: &InputTransform) 
 
         DaemonCommand::GetInputState => match ds.get_input_state() {
             Ok(mut s) => {
-                transform.apply(&mut s);
+                transform.apply_axes(&mut s);
                 DaemonResponse::InputState(s)
             }
             Err(e) => DaemonResponse::Error {

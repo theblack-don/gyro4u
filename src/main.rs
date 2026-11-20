@@ -11,25 +11,34 @@ mod daemon;
 mod dualsense;
 mod firmware;
 mod firmware_controller;
+mod gyro;
+mod haptics_stream;
+mod input_grab;
 mod input_poller;
 mod inputs;
-mod haptics_stream;
-mod usb_haptics;
 mod ipc;
+mod keycodes;
 mod noctalia;
 mod profiles;
+mod remap;
 mod settings;
 mod state;
+mod stick_mouse;
 mod style;
 mod theme;
+mod touchpad_filter;
 mod transform;
 mod ui;
+mod uinput;
+mod usb_haptics;
 mod util;
 mod virtual_gamepad;
-mod input_grab;
-mod touchpad_filter;
+mod virtual_keyboard;
+mod virtual_mouse;
 
 fn main() -> Result<(), eframe::Error> {
+    common::ensure_config_migrated();
+
     let args: Vec<String> = env::args().collect();
 
     if args.iter().any(|a| a == "--daemon") {
@@ -42,7 +51,7 @@ fn main() -> Result<(), eframe::Error> {
         let mut client = match IpcClient::try_connect(&addr) {
             Some(c) => c,
             None => {
-                eprintln!("ds4u daemon is not running");
+                eprintln!("gyro4u daemon is not running");
                 std::process::exit(1);
             }
         };
@@ -64,7 +73,7 @@ fn main() -> Result<(), eframe::Error> {
             }
             "--switch-profile" => {
                 let name = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
-                    eprintln!("usage: ds4u --switch-profile <name>");
+                    eprintln!("usage: gyro4u --switch-profile <name>");
                     std::process::exit(1);
                 });
                 match client.switch_profile(name) {
@@ -117,7 +126,7 @@ fn main() -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        "DS4U",
+        "Gyro4U",
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

@@ -2,9 +2,13 @@ use egui::{Align2, Color32, Pos2, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::app::DS4UApp;
 use crate::common::SensitivityCurve;
+use crate::stick_mouse::StickMouseCurve;
 use crate::theme::ThemeColors;
 
-use super::widgets::{ds_label, ds_row, ds_section, ds_slider, ds_toggle, ds_value_pct};
+use super::widgets::{
+    ROW_PAD_X, ds_label, ds_pill_button, ds_row, ds_section, ds_slider, ds_toggle, ds_value_pct,
+    ds_value_text,
+};
 
 struct StickSide<'a> {
     label: &'a str,
@@ -359,6 +363,136 @@ impl DS4UApp {
                         egui::Stroke::new(1.0, crate::ui::widgets::sep_color(&c)),
                     );
                 });
+                ds_section(ui, &c, "Right Stick Mouse");
+                ds_row(ui, |ui| {
+                    ds_label(ui, "Right stick mouse");
+                    if ds_toggle(ui, &c, &mut self.sticks.stick_mouse.enabled).changed() {
+                        any_changed = true;
+                    }
+                });
+                if self.sticks.stick_mouse.enabled {
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Speed");
+                        if ds_slider(ui, &c, &mut self.sticks.stick_mouse.speed, 100.0..=5000.0)
+                            .changed()
+                        {
+                            any_changed = true;
+                        }
+                        ds_value_text(
+                            ui,
+                            &format!("{} counts/s", self.sticks.stick_mouse.speed.round() as i32),
+                        );
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Horizontal scale");
+                        if ds_slider(
+                            ui,
+                            &c,
+                            &mut self.sticks.stick_mouse.horizontal_scale,
+                            0.1..=2.0,
+                        )
+                        .changed()
+                        {
+                            any_changed = true;
+                        }
+                        ds_value_text(
+                            ui,
+                            &format!("{:.2}x", self.sticks.stick_mouse.horizontal_scale),
+                        );
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Vertical scale");
+                        if ds_slider(
+                            ui,
+                            &c,
+                            &mut self.sticks.stick_mouse.vertical_scale,
+                            0.1..=2.0,
+                        )
+                        .changed()
+                        {
+                            any_changed = true;
+                        }
+                        ds_value_text(
+                            ui,
+                            &format!("{:.2}x", self.sticks.stick_mouse.vertical_scale),
+                        );
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Deadzone");
+                        if ds_slider(ui, &c, &mut self.sticks.stick_mouse.deadzone, 0.0..=0.9)
+                            .changed()
+                        {
+                            any_changed = true;
+                        }
+                        ds_value_text(
+                            ui,
+                            &format!("{:.2}", self.sticks.stick_mouse.deadzone),
+                        );
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Curve");
+                        for option in [
+                            StickMouseCurve::Linear,
+                            StickMouseCurve::Relaxed,
+                            StickMouseCurve::Aggressive,
+                            StickMouseCurve::Exponential,
+                        ] {
+                            let active = self.sticks.stick_mouse.curve == option;
+                            if ds_pill_button(ui, &c, option.label(), active).clicked() {
+                                self.sticks.stick_mouse.curve = option;
+                                any_changed = true;
+                            }
+                            ui.add_space(6.0);
+                        }
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Smoothing");
+                        if ds_slider(ui, &c, &mut self.sticks.stick_mouse.smoothing, 0.0..=0.95)
+                            .changed()
+                        {
+                            any_changed = true;
+                        }
+                        ds_value_pct(ui, self.sticks.stick_mouse.smoothing * 100.0);
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Invert X");
+                        if ds_toggle(ui, &c, &mut self.sticks.stick_mouse.invert_x).changed() {
+                            any_changed = true;
+                        }
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Invert Y");
+                        if ds_toggle(ui, &c, &mut self.sticks.stick_mouse.invert_y).changed() {
+                            any_changed = true;
+                        }
+                    });
+
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Keep analog output");
+                        if ds_toggle(ui, &c, &mut self.sticks.digital_right_analog).changed() {
+                            any_changed = true;
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.add_space(ROW_PAD_X);
+                    ui.label(
+                        egui::RichText::new(
+                            "Adds to gyro mouse motion. Digital right-stick bindings are ignored while Right Stick Mouse is enabled and restored when it is disabled.",
+                        )
+                        .size(12.0)
+                        .italics()
+                        .color(c.text_dim()),
+                    );
+                });
+
                 ds_section(ui, &c, "Options");
                 ds_row(ui, |ui| {
                     ds_label(ui, "Swap L / R");

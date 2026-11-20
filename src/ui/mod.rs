@@ -16,6 +16,7 @@ pub mod gyroscope;
 pub mod haptics;
 pub mod inputs;
 pub mod lightbar;
+pub mod mapping;
 pub mod navigation;
 pub mod profiles;
 pub mod settings;
@@ -35,6 +36,7 @@ impl DS4UApp {
             Section::Audio => self.render_audio_settings(ui),
             Section::Advanced => self.render_advanced(ui),
             Section::Inputs => self.render_inputs_section(ui),
+            Section::Mapping => self.render_mapping_section(ui),
             Section::Settings => self.render_settings_section(ui),
             Section::Gyroscope => self.render_gyroscope_section(ui),
             Section::Touchpad => self.render_touchpad_section(ui),
@@ -100,7 +102,11 @@ impl App for DS4UApp {
         } else {
             let needs_input = matches!(
                 self.active_section,
-                Section::Inputs | Section::Sticks | Section::Touchpad | Section::Gyroscope
+                Section::Inputs
+                    | Section::Mapping
+                    | Section::Sticks
+                    | Section::Touchpad
+                    | Section::Gyroscope
             );
             let want_poll = !self.firmware.updating && !self.haptic_stream_active();
 
@@ -118,13 +124,14 @@ impl App for DS4UApp {
 
                 if let Some(mut state) = states.into_iter().last() {
                     if needs_input && !self.using_daemon() {
-                        self.input_transform.apply(&mut state);
+                        self.input_transform.apply_axes(&mut state);
                     }
                     self.input.controller_state = Some(state);
                 }
             } else if self.input.polling {
                 self.stop_input_polling();
             }
+            self.handle_binding_capture(ctx);
             self.handle_controller_nav(ctx);
 
             if needs_input || self.active_section == Section::Haptics {
