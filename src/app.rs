@@ -8,23 +8,63 @@ use std::{
 use crate::{
     backend::{ControllerBackend, DirectBackend, IpcBackend, TRIGGER_OFF},
     common::*,
+    controller::{self, ControllerFamily, PhysicalController},
     daemon::DaemonManager,
-    dualsense::{self, BatteryInfo, DualSense},
     firmware_controller::FirmwareController,
     gyro::GyroConfig,
     input_poller::InputPoller,
-    ipc::{IpcClient, socket_path},
+    inputs::{ControllerKind, ControllerState},
+    ipc::{DaemonCompatibility, IpcClient, probe_daemon, socket_path},
     keycodes,
-    profiles::{Profile, ProfileManager, TriggerConfig},
+    profiles::{
+        Profile, ProfileManager, ProfileNameConflict, TriggerConfig, profile_name_conflict,
+    },
     remap::{Binding, BindingSlot, Key, StickConfig},
-    settings::{Settings, SettingsManager},
+    settings::{ControllerPreference, Settings, SettingsManager},
     state::*,
     stick_mouse::StickMouseConfig,
     theme::{Theme, ThemeManager},
     touchpad_filter::TouchpadFilter,
     transform::InputTransform,
-    util::mlock,
+    util::{RateLimiter, mlock},
 };
+
+fn input_signature(s: &ControllerState) -> (u32, u32, u8, bool, bool, u8) {
+    (
+        s.buttons,
+        s.extra_buttons,
+        s.dpad,
+        s.steam_left_pad.touch,
+        s.steam_right_pad.touch,
+        s.right_y,
+    )
+}
+
+pub(crate) const STEAM_WAKE_RETRY: &str = "Steam Controller not detected — turn it on; retrying";
+
+fn pending_status_text(
+    pending: PendingControllerTarget,
+    current: Option<ControllerFamily>,
+    present: bool,
+    live: bool,
+) -> String {
+    let steam_wake = pending.family == ControllerFamily::Steam && !live;
+    if steam_wake {
+        STEAM_WAKE_RETRY.to_string()
+    } else if pending.since.elapsed() < Duration::from_secs(5) {
+        format!("Switching to {}...", pending.family.label())
+    } else if present {
+        format!("Could not switch to {} - retrying", pending.family.label())
+    } else if let Some(current) = current {
+        format!(
+            "{} not detected - retrying (still using {})",
+            pending.family.label(),
+            current.label()
+        )
+    } else {
+        format!("{} not detected - retrying", pending.family.label())
+    }
+}
 
 pub(crate) struct DS4UApp {
     pub(crate) settings: Settings,
@@ -33,7 +73,13 @@ pub(crate) struct DS4UApp {
     pub(crate) theme_manager: ThemeManager,
 
     api: HidApi,
-    pub(crate) controller: Option<Arc<Mutex<DualSense>>>,
+    pub(crate) controller: Option<Arc<Mutex<PhysicalController>>>,
+    pub(crate) controller_kind: Option<ControllerKind>,
+    pub(crate) controller_inventory: Vec<controller::FamilyRow>,
+    pub(crate) pending_controller_target: Option<PendingControllerTarget>,
+    pub(crate) controller_switch_error: String,
+    steam_live_slot: Option<controller::SteamLiveSlot>,
+    last_steam_liveness_check: Instant,
 
     pub(crate) ipc: Option<Arc<Mutex<IpcClient>>>,
 
@@ -47,6 +93,8 @@ pub(crate) struct DS4UApp {
     pub(crate) profile_manager: ProfileManager,
     pub(crate) current_profile: Option<Profile>,
     pub(crate) profile_edit_name: String,
+    pub(crate) profile_create_error: String,
+    pub(crate) profile_convert_offer: Option<String>,
 
     daemon_manager: DaemonManager,
 
@@ -81,7 +129,9 @@ pub(crate) struct DS4UApp {
     pub(crate) lightbar_effect: LightbarEffect,
 
     pub(crate) daemon_alive_cached: bool,
+    pub(crate) daemon_incompatible: Option<String>,
     last_daemon_probe: Instant,
+    discovery_error_limiter: RateLimiter,
     haptic_stream: crate::haptics_stream::HapticStream,
     usb_haptic_stream: crate::usb_haptics::UsbHapticStream,
     daemon_raw_active: bool,
@@ -105,6 +155,12 @@ impl DS4UApp {
 
             api,
             controller: None,
+            controller_kind: None,
+            controller_inventory: Vec::new(),
+            pending_controller_target: None,
+            controller_switch_error: String::new(),
+            steam_live_slot: None,
+            last_steam_liveness_check: Instant::now() - Duration::from_secs(10),
             ipc: None,
             last_connection_check: Instant::now(),
 
@@ -116,6 +172,8 @@ impl DS4UApp {
             profile_manager: ProfileManager::new(),
             current_profile: None,
             profile_edit_name: String::new(),
+            profile_create_error: String::new(),
+            profile_convert_offer: None,
 
             daemon_manager: DaemonManager::new(),
 
@@ -182,6 +240,8 @@ impl DS4UApp {
                 tap_to_click: true,
                 natural_scrolling: false,
                 sensitivity: 1.0,
+                left_mouse: crate::trackpad_mouse::SteamPadMouseConfig::default(),
+                right_mouse: crate::trackpad_mouse::SteamPadMouseConfig::default(),
             },
 
             haptic_state: HapticState {
@@ -208,7 +268,9 @@ impl DS4UApp {
             lightbar_effect: LightbarEffect::None,
 
             daemon_alive_cached: false,
+            daemon_incompatible: None,
             last_daemon_probe: Instant::now() - Duration::from_secs(10),
+            discovery_error_limiter: RateLimiter::new(Duration::from_secs(5)),
             haptic_stream: crate::haptics_stream::HapticStream::new(),
             usb_haptic_stream: crate::usb_haptics::UsbHapticStream::new(),
             daemon_raw_active: false,
@@ -221,23 +283,7 @@ impl DS4UApp {
 
         app.check_for_controller();
 
-        {
-            let name = if app.settings.profile.is_empty() {
-                "Default".to_string()
-            } else {
-                app.settings.profile.clone()
-            };
-
-            let profile = if app.profile_manager.profile_exists(&name) {
-                app.profile_manager
-                    .load_profile(&name)
-                    .unwrap_or_else(|_| app.profile_manager.ensure_default_exists())
-            } else {
-                app.profile_manager.ensure_default_exists()
-            };
-
-            app.load_profile(&profile);
-        }
+        app.load_profile_for_device();
 
         app
     }
@@ -264,31 +310,35 @@ impl DS4UApp {
         self.input.state_rx = Some(rx);
         self.input.stop = Some(stop_flag);
         self.input.polling = true;
+        self.input.last_state_at = Instant::now();
 
         let waker = self.egui_ctx.clone();
 
         let handle = if self.ipc.is_some() {
+            if let Some(ipc) = &self.ipc
+                && let Ok(mut client) = ipc.try_lock()
+            {
+                let _ = client.set_motion(true);
+            }
             let path = socket_path();
             thread::spawn(move || {
                 let mut client = match IpcClient::connect(&path) {
                     Ok(c) => c,
                     Err(_) => return,
                 };
-                let mut last_b = u32::MAX;
-                let mut last_d = 0xFFu8;
+                let _ = client.set_motion(true);
+                let mut last_signature = None;
                 while !stop_clone.load(sync::atomic::Ordering::Relaxed) {
                     match client.get_input_state() {
                         Ok(state) => {
-                            let (b, d, ry) = (state.buttons, state.dpad, state.right_y);
+                            let signature = input_signature(&state);
                             let _ = tx.send(state);
-                            if let Some(ctx) = &waker {
-                                let stick = (ry as i16 - 128).abs() > 24;
-                                if b != last_b || d != last_d || stick {
-                                    ctx.request_repaint();
-                                }
+                            if let Some(ctx) = &waker
+                                && last_signature != Some(signature)
+                            {
+                                ctx.request_repaint();
                             }
-                            last_b = b;
-                            last_d = d;
+                            last_signature = Some(signature);
                             sleep(Duration::from_millis(8));
                         }
                         Err(_) => {
@@ -296,36 +346,34 @@ impl DS4UApp {
                         }
                     }
                 }
+                let _ = client.set_motion(false);
             })
         } else {
-            if self.controller.is_none() {
+            let Some(controller) = self.controller.clone() else {
                 return;
-            }
-            let serial = self.controller_serial.clone();
+            };
             thread::spawn(move || {
-                let api = match HidApi::new() {
-                    Ok(a) => a,
-                    Err(_) => return,
-                };
-                let mut reader = match DualSense::new(&api, serial.as_deref()) {
-                    Ok(d) => d,
-                    Err(_) => return,
-                };
-                let mut last_b = u32::MAX;
-                let mut last_d = 0xFFu8;
+                {
+                    let mut reader = mlock(&controller);
+                    let _ = reader.set_motion(true);
+                }
+                let mut last_signature = None;
                 while !stop_clone.load(sync::atomic::Ordering::Relaxed) {
-                    match reader.get_input_state() {
+                    let state = {
+                        let mut reader = mlock(&controller);
+                        reader.get_input_state()
+                    };
+                    match state {
                         Ok(state) => {
-                            let (b, d, ry) = (state.buttons, state.dpad, state.right_y);
+                            let signature = input_signature(&state);
                             let _ = tx.send(state);
-                            if let Some(ctx) = &waker {
-                                let stick = (ry as i16 - 128).abs() > 24;
-                                if b != last_b || d != last_d || stick {
-                                    ctx.request_repaint();
-                                }
+                            if let Some(ctx) = &waker
+                                && last_signature != Some(signature)
+                            {
+                                ctx.request_repaint();
                             }
-                            last_b = b;
-                            last_d = d;
+                            last_signature = Some(signature);
+                            sleep(Duration::from_millis(2));
                         }
                         Err(_) => {
                             sleep(Duration::from_millis(8));
@@ -339,55 +387,323 @@ impl DS4UApp {
 
     pub(crate) fn stop_input_polling(&mut self) {
         self.input.stop();
+        if let Some(ipc) = &self.ipc {
+            if let Ok(mut client) = ipc.try_lock() {
+                let _ = client.set_motion(false);
+            }
+        } else if let Some(controller) = &self.controller {
+            let _ = mlock(controller).set_motion(false);
+        }
+    }
+
+    fn stop_input_polling_for_handoff(&mut self) {
+        if let Some(controller) = &self.controller {
+            mlock(controller).prepare_handoff();
+        }
+        self.input.stop();
+    }
+
+    fn handoff_direct_controller(&mut self) {
+        if self.controller.is_none() {
+            return;
+        }
+        self.stop_input_polling_for_handoff();
+        self.controller = None;
+        self.battery_info = None;
+    }
+
+    fn attach_daemon_waiting(&mut self, client: Arc<Mutex<IpcClient>>) {
+        self.handoff_direct_controller();
+        self.input.stop();
+        self.stop_touchpad_filter();
+        self.battery_info = None;
+        self.controller_serial = None;
+        self.controller_is_bt = None;
+        self.controller_product_id = None;
+        self.controller_kind = None;
+        self.steam_live_slot = None;
+        self.last_steam_liveness_check = Instant::now() - Duration::from_secs(10);
+        self.ipc = Some(client);
+        self.status_message = "Attached to daemon (waiting for controller)".to_string();
+        self.error_message.clear();
+    }
+
+    pub(crate) fn current_family(&self) -> Option<ControllerFamily> {
+        self.controller_kind.map(controller::family_of_kind)
+    }
+    fn inventory_has(&self, family: ControllerFamily) -> bool {
+        self.controller_inventory
+            .iter()
+            .any(|row| row.family == family)
+    }
+
+    fn family_live(&self, family: ControllerFamily) -> bool {
+        self.controller_inventory
+            .iter()
+            .any(|row| row.family == family && row.live)
+    }
+
+    fn refresh_controller_inventory(&mut self) {
+        self.refresh_steam_liveness();
+        let (devices, _) = controller::scan_devices(&self.api);
+        self.controller_inventory = controller::inventory_rows(
+            &devices,
+            self.current_family(),
+            self.controller_serial.as_deref(),
+            self.steam_live_slot.as_ref(),
+        );
+    }
+
+    fn refresh_steam_liveness(&mut self) {
+        if self.ipc.is_none() {
+            self.steam_live_slot = None;
+            return;
+        }
+        if self.last_steam_liveness_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.last_steam_liveness_check = Instant::now();
+        let Some(ipc) = self.ipc.clone() else {
+            return;
+        };
+        let Ok(mut client) = ipc.try_lock() else {
+            return;
+        };
+        if let Ok(liveness) = client.get_steam_liveness() {
+            self.steam_live_slot = liveness.live;
+        }
+    }
+
+    fn install_controller(&mut self, controller: PhysicalController) {
+        let info = controller.info().clone();
+        let firmware = controller
+            .capabilities()
+            .firmware
+            .then(|| controller.get_firmware_info().ok())
+            .flatten();
+
+        // Stop the old reader only after the replacement handle opened.
+        self.stop_input_polling();
+        self.stop_touchpad_filter();
+
+        if let Some((version, build_date, build_time)) = firmware {
+            self.firmware.current_version = Some(version);
+            self.firmware.build_date = Some(build_date);
+            self.firmware.build_time = Some(build_time);
+        } else {
+            self.firmware.current_version = None;
+            self.firmware.build_date = None;
+            self.firmware.build_time = None;
+        }
+
+        self.controller_serial = Some(info.identity.clone());
+        self.controller_is_bt = Some(info.is_bluetooth);
+        self.controller_product_id = Some(info.product_id);
+        self.controller_kind = Some(info.kind);
+        self.controller = Some(Arc::new(Mutex::new(controller)));
+        self.firmware.latest_version = None;
+        self.clear_pending_target();
+        self.status_message = format!("{} connected", info.kind.label());
+        self.error_message.clear();
+        self.lightbar.enabled = true;
+        self.load_profile_for_device();
+        if self.is_steam() {
+            self.battery_info = None;
+        } else {
+            self.update_battery();
+        }
+        self.apply_lightbar();
+        self.apply_player_leds();
+        self.apply_microphone();
+        self.apply_input_transform();
+        self.apply_triggers();
+        self.start_touchpad_filter();
+        self.refresh_controller_inventory();
+        if let Some(ctx) = &self.egui_ctx {
+            ctx.request_repaint();
+        }
     }
 
     fn connect_controller(&mut self) {
-        match DualSense::new(&self.api, None) {
-            Ok(ds) => {
-                if let Ok((version, build_date, build_time)) = ds.get_firmware_info() {
-                    self.firmware.current_version = Some(version);
-                    self.firmware.build_date = Some(build_date);
-                    self.firmware.build_time = Some(build_time);
-                } else {
-                    self.firmware.current_version = None;
-                    self.firmware.build_date = None;
-                    self.firmware.build_time = None;
+        match PhysicalController::discover(&self.api, None, self.settings.controller_preference) {
+            Ok(controller) => self.install_controller(controller),
+            Err(e) => {
+                if self.controller.is_none() {
+                    self.controller_kind = None;
                 }
-
-                self.controller_serial = Some(ds.serial().to_string());
-                self.controller_is_bt = Some(ds.is_bluetooth());
-                self.controller_product_id = Some(ds.product_id());
-                self.controller = Some(Arc::new(Mutex::new(ds)));
-                self.firmware.latest_version = None;
-                self.status_message = "Controller connected".to_string();
-                self.error_message.clear();
-                self.lightbar.enabled = true;
-                self.update_battery();
-                self.apply_lightbar();
-                self.apply_player_leds();
-                self.apply_microphone();
-                self.apply_input_transform();
-                self.apply_triggers();
-                self.start_touchpad_filter();
-            }
-            Err(_) => {
-                self.controller = None;
+                if self.discovery_error_limiter.ready() {
+                    let message = e.to_string();
+                    eprintln!("[gyro4u] controller discovery failed: {}", message);
+                    self.error_message = message;
+                }
                 self.stop_touchpad_filter();
             }
         }
     }
 
+    fn load_profile_for_device(&mut self) {
+        let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
+        let current = self.current_profile.as_ref();
+        if current.is_some_and(|profile| profile.matches_device(kind)) {
+            return;
+        }
+        let remembered = self
+            .settings
+            .remembered_profile(kind.is_steam())
+            .to_string();
+        let loaded = if self.profile_manager.profile_exists(&remembered) {
+            self.profile_manager
+                .load_profile(&remembered)
+                .ok()
+                .filter(|profile| profile.matches_device(kind))
+        } else {
+            None
+        };
+        let profile = loaded.unwrap_or_else(|| self.profile_manager.ensure_default_for(kind));
+        self.load_profile(&profile);
+    }
+
+    fn begin_pending_target(&mut self, family: ControllerFamily) {
+        match self.pending_controller_target {
+            Some(pending) if pending.family == family => {}
+            _ => {
+                self.pending_controller_target = Some(PendingControllerTarget {
+                    family,
+                    since: Instant::now(),
+                });
+                self.controller_switch_error.clear();
+            }
+        }
+    }
+
+    fn clear_pending_target(&mut self) {
+        self.pending_controller_target = None;
+        self.controller_switch_error.clear();
+    }
+
+    fn update_pending_message(&mut self) {
+        let Some(pending) = self.pending_controller_target else {
+            return;
+        };
+        if self.current_family() == Some(pending.family) {
+            self.clear_pending_target();
+            return;
+        }
+        let present = self.inventory_has(pending.family);
+        let live = self.family_live(pending.family);
+        let steam_wake = pending.family == ControllerFamily::Steam && !live;
+        let message = pending_status_text(pending, self.current_family(), present, live);
+        self.status_message = message.clone();
+        if steam_wake {
+            self.controller_switch_error.clear();
+        } else if pending.since.elapsed() >= Duration::from_secs(5) {
+            self.controller_switch_error = message;
+        }
+    }
+
+    fn attempt_pending_target(&mut self) -> bool {
+        let Some(pending) = self.pending_controller_target else {
+            return false;
+        };
+        let current = self.current_family();
+        if current == Some(pending.family) {
+            self.clear_pending_target();
+            return true;
+        }
+        let present = self.inventory_has(pending.family);
+        let live = self.family_live(pending.family);
+        if !present {
+            if pending.family == ControllerFamily::Steam {
+                self.controller_switch_error.clear();
+                self.status_message = pending_status_text(pending, current, present, live);
+            } else {
+                self.controller_switch_error = match current {
+                    Some(current) => format!(
+                        "{} not detected - still using {}",
+                        pending.family.label(),
+                        current.label()
+                    ),
+                    None => format!("{} not detected", pending.family.label()),
+                };
+                self.status_message = self.controller_switch_error.clone();
+            }
+            return false;
+        }
+
+        let target_preference =
+            if controller::requested_family(self.settings.controller_preference).is_some() {
+                pending.family.preference()
+            } else {
+                self.settings.controller_preference
+            };
+        match PhysicalController::discover(&self.api, None, target_preference) {
+            Ok(controller) => {
+                self.install_controller(controller);
+                true
+            }
+            Err(e) => {
+                if pending.family == ControllerFamily::Steam && !live {
+                    self.controller_switch_error.clear();
+                    self.status_message = pending_status_text(pending, current, present, live);
+                } else {
+                    self.controller_switch_error =
+                        format!("Could not switch to {}: {e}", pending.family.label());
+                    self.status_message = self.controller_switch_error.clone();
+                    if self.discovery_error_limiter.ready() {
+                        eprintln!("[gyro4u] {}", self.controller_switch_error);
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    fn evaluate_direct_target(&mut self) {
+        let Some(current) = self.current_family() else {
+            return;
+        };
+        let preference = self.settings.controller_preference;
+        let target = controller::requested_family(preference).or_else(|| {
+            controller::switch_target(
+                preference,
+                Some(current),
+                self.inventory_has(ControllerFamily::DualSense),
+                self.inventory_has(ControllerFamily::Steam),
+            )
+        });
+        let Some(target) = target else {
+            return;
+        };
+        if target == current {
+            if self
+                .pending_controller_target
+                .is_some_and(|p| p.family == target)
+            {
+                self.clear_pending_target();
+            }
+            return;
+        }
+        self.begin_pending_target(target);
+        let _ = self.attempt_pending_target();
+    }
+
     pub(crate) fn connect_via_daemon(&mut self, client: Arc<Mutex<IpcClient>>) {
+        self.handoff_direct_controller();
         self.stop_touchpad_filter();
         let mut c = mlock(&client);
 
-        if let Ok(Some((serial, pid, is_bt))) = c.get_controller_info() {
+        if let Ok(Some((serial, pid, is_bt, kind, _transport))) = c.get_controller_info() {
             self.controller_serial = Some(serial);
             self.controller_is_bt = Some(is_bt);
             self.controller_product_id = Some(pid);
+            self.controller_kind = Some(kind);
         }
 
-        if let Ok((ver, date, time)) = c.get_firmware_info() {
+        if self
+            .controller_kind
+            .is_some_and(|kind| kind.capabilities().firmware)
+            && let Ok((ver, date, time)) = c.get_firmware_info()
+        {
             self.firmware.current_version = Some(ver);
             self.firmware.build_date = Some(date);
             self.firmware.build_time = Some(time);
@@ -397,7 +713,10 @@ impl DS4UApp {
 
         self.firmware.latest_version = None;
         self.ipc = Some(client);
-        self.status_message = "Controller connected (via daemon)".to_string();
+        self.status_message = self
+            .controller_kind
+            .map(|kind| format!("{} connected (via daemon)", kind.label()))
+            .unwrap_or_else(|| "Controller connected (via daemon)".to_string());
         self.error_message.clear();
         self.lightbar.enabled = true;
         self.update_battery();
@@ -407,6 +726,16 @@ impl DS4UApp {
         self.apply_input_transform();
         self.apply_triggers();
         self.apply_haptic_pattern();
+        self.load_profile_for_device();
+        self.sync_active_profile();
+        if self
+            .pending_controller_target
+            .is_some_and(|pending| Some(pending.family) == self.current_family())
+        {
+            self.clear_pending_target();
+        }
+        let _ = self.refresh_hid_devices();
+        self.refresh_controller_inventory();
     }
 
     fn disconnect_controller(&mut self) {
@@ -417,6 +746,8 @@ impl DS4UApp {
         self.controller_is_bt = None;
         self.controller_product_id = None;
         self.controller_serial = None;
+        self.controller_kind = None;
+        self.steam_live_slot = None;
         self.status_message = "Controller disconnected".to_string();
     }
 
@@ -430,10 +761,11 @@ impl DS4UApp {
         if let Some(ref ipc) = self.ipc.clone() {
             match mlock(ipc).get_battery() {
                 Ok(info) => self.battery_info = Some(info),
-                Err(_) => {
+                Err(_) if self.controller_kind.is_some() && !self.is_steam() => {
                     self.stop_input_polling();
                     self.disconnect_controller();
                 }
+                Err(_) => {}
             }
             return;
         }
@@ -445,11 +777,13 @@ impl DS4UApp {
             return;
         };
 
-        if let Ok(info) = ctrl.get_battery() {
-            self.battery_info = Some(info);
-        } else {
-            drop(ctrl);
-            self.disconnect_controller();
+        match ctrl.get_battery() {
+            Ok(info) => self.battery_info = Some(info),
+            Err(_) if !self.is_steam() => {
+                drop(ctrl);
+                self.disconnect_controller();
+            }
+            Err(_) => {}
         }
     }
 
@@ -515,6 +849,11 @@ impl DS4UApp {
     }
 
     pub(crate) fn start_raw_haptics(&mut self) {
+        if self.is_steam() {
+            self.error_message =
+                "Raw haptics are not implemented for the Steam Controller yet".to_string();
+            return;
+        }
         let pattern = self.haptic_state.pattern;
         let strength = self.haptic_state.strength;
         let speed = self.haptic_state.speed;
@@ -574,6 +913,11 @@ impl DS4UApp {
     }
 
     fn acquire_direct_fw(&mut self) -> bool {
+        if self.is_steam() {
+            self.error_message =
+                "Firmware updates are not supported for the Steam Controller".to_string();
+            return false;
+        }
         if self.controller.is_some() {
             return true;
         }
@@ -586,9 +930,10 @@ impl DS4UApp {
             return false;
         }
 
-        match DualSense::new(&self.api, None) {
-            Ok(ds) => {
-                self.controller = Some(Arc::new(Mutex::new(ds)));
+        match PhysicalController::discover(&self.api, None, self.settings.controller_preference) {
+            Ok(controller) => {
+                self.controller_kind = Some(controller.kind());
+                self.controller = Some(Arc::new(Mutex::new(controller)));
                 self.firmware.used_daemon = true;
                 true
             }
@@ -600,7 +945,20 @@ impl DS4UApp {
         }
     }
 
+    pub(crate) fn capabilities(&self) -> Option<crate::inputs::ControllerCapabilities> {
+        self.controller_kind.map(|kind| kind.capabilities())
+    }
+
+    pub(crate) fn is_steam(&self) -> bool {
+        self.capabilities().is_some_and(|caps| {
+            caps.kind.is_steam() && caps.touchpad == crate::inputs::TouchpadKind::DualCircular
+        })
+    }
+
     pub(crate) fn apply_lightbar(&mut self) {
+        if !self.capabilities().is_some_and(|caps| caps.lightbar) {
+            return;
+        }
         let r = (self.lightbar.r * 255.0) as u8;
         let g = (self.lightbar.g * 255.0) as u8;
         let b = (self.lightbar.b * 255.0) as u8;
@@ -611,12 +969,18 @@ impl DS4UApp {
     }
 
     pub(crate) fn apply_lightbar_effect(&mut self) {
+        if !self.capabilities().is_some_and(|caps| caps.lightbar) {
+            return;
+        }
         if let Some(be) = self.backend() {
             be.set_lightbar_effect(self.lightbar_effect.clone());
         }
     }
 
     pub(crate) fn apply_haptic_pattern(&mut self) {
+        if !self.capabilities().is_some_and(|caps| caps.haptics) {
+            return;
+        }
         if let Some(be) = self.backend() {
             be.set_haptic_pattern(
                 self.haptic_state.pattern,
@@ -627,12 +991,18 @@ impl DS4UApp {
     }
 
     pub(crate) fn apply_player_leds(&mut self) {
+        if !self.capabilities().is_some_and(|caps| caps.player_leds) {
+            return;
+        }
         if let Some(be) = self.backend() {
             be.set_player_leds(self.player_leds);
         }
     }
 
     pub(crate) fn apply_microphone(&mut self) {
+        if !self.capabilities().is_some_and(|caps| caps.microphone) {
+            return;
+        }
         if let Some(be) = self.backend() {
             be.set_mic(self.microphone.enabled);
             be.set_mic_led(self.microphone.led_state);
@@ -640,12 +1010,18 @@ impl DS4UApp {
     }
 
     pub(crate) fn apply_vibration(&mut self) {
+        if !self.capabilities().is_some_and(|caps| caps.haptics) {
+            return;
+        }
         if let Some(be) = self.backend() {
             be.set_vibration(self.vibration.rumble, self.vibration.trigger);
         }
     }
 
     pub(crate) fn test_rumble(&self, amp_l: u8, amp_r: u8, duration_ms: u64) {
+        if !self.capabilities().is_some_and(|caps| caps.haptics) {
+            return;
+        }
         let ctrl = self.controller.clone();
         let ipc = self.ipc.clone();
         std::thread::spawn(move || {
@@ -672,6 +1048,12 @@ impl DS4UApp {
     }
 
     pub(crate) fn apply_triggers(&mut self) {
+        if !self
+            .capabilities()
+            .is_some_and(|caps| caps.adaptive_triggers)
+        {
+            return;
+        }
         let to_eff = |cfg: &TriggerConfig| {
             if matches!(cfg.mode, TriggerMode::Off) {
                 None
@@ -729,6 +1111,8 @@ impl DS4UApp {
         self.touchpad.tap_to_click = profile.touchpad_tap_to_click;
         self.touchpad.natural_scrolling = profile.touchpad_natural_scrolling;
         self.touchpad.sensitivity = profile.touchpad_sensitivity;
+        self.touchpad.left_mouse = profile.steam_left_pad_mouse.clone();
+        self.touchpad.right_mouse = profile.steam_right_pad_mouse.clone();
 
         self.haptic_state.pattern = profile.haptic_pattern;
         self.haptic_state.strength = profile.haptic_strength;
@@ -743,7 +1127,8 @@ impl DS4UApp {
 
         self.current_profile = Some(profile.clone());
 
-        self.settings.profile = profile.name.clone();
+        self.settings
+            .remember_profile(profile.device.is_steam(), &profile.name);
         self.settings_manager.save(&self.settings);
 
         self.apply_lightbar();
@@ -779,9 +1164,15 @@ impl DS4UApp {
     }
 
     pub(crate) fn sync_profile(&mut self) {
+        if let Err(e) = self.sync_profile_checked() {
+            self.error_message = e;
+        }
+    }
+
+    pub(crate) fn sync_profile_checked(&mut self) -> Result<(), String> {
         let stick_digital = self.stick_config();
         let Some(profile) = self.current_profile.as_mut() else {
-            return;
+            return Err("No active profile to save".to_string());
         };
 
         profile.lightbar_r = self.lightbar.r;
@@ -815,6 +1206,11 @@ impl DS4UApp {
         profile.touchpad_tap_to_click = self.touchpad.tap_to_click;
         profile.touchpad_natural_scrolling = self.touchpad.natural_scrolling;
         profile.touchpad_sensitivity = self.touchpad.sensitivity;
+        profile.steam_left_pad_mouse = self.touchpad.left_mouse.clone();
+        profile.steam_right_pad_mouse = self.touchpad.right_mouse.clone();
+        if let Some(kind) = self.controller_kind {
+            profile.device = kind;
+        }
 
         profile.haptic_pattern = self.haptic_state.pattern;
         profile.haptic_strength = self.haptic_state.strength;
@@ -823,11 +1219,22 @@ impl DS4UApp {
         profile.button_bindings = self.remap.bindings.clone();
         profile.layers = self.remap.layers.clone();
         profile.press_timing = self.remap.press_timing.clone();
+        let profile = profile.clone();
 
-        if let Some(ref ipc) = self.ipc.clone() {
-            let _ = mlock(ipc).save_profile(profile.clone());
+        if let Some(ipc) = self.ipc.clone() {
+            match mlock(&ipc).save_profile(profile.clone()) {
+                Ok(()) => Ok(()),
+                Err(e) => match self.profile_manager.save_profile(&profile) {
+                    Ok(()) => Err(format!("Daemon save failed ({e}); saved locally")),
+                    Err(local) => Err(format!(
+                        "Daemon save failed ({e}); local save also failed: {local}"
+                    )),
+                },
+            }
         } else {
-            let _ = self.profile_manager.save_profile(profile);
+            self.profile_manager
+                .save_profile(&profile)
+                .map_err(|e| format!("Failed to save profile '{}': {e}", profile.name))
         }
     }
 
@@ -840,66 +1247,170 @@ impl DS4UApp {
             return;
         }
 
+        if self.refresh_hid_devices() {
+            self.refresh_controller_inventory();
+        }
+
+        if self.is_steam()
+            && !self.using_daemon()
+            && self.input.polling
+            && self.input.last_state_at.elapsed() > Duration::from_secs(2)
+        {
+            self.stop_input_polling();
+            self.disconnect_controller();
+            return;
+        }
+
         if let Some(ref ipc) = self.ipc.clone() {
-            let still_present = matches!(mlock(ipc).get_controller_info(), Ok(Some(_)));
-            if !still_present {
-                self.stop_input_polling();
-                self.disconnect_controller();
+            let info = mlock(ipc).get_controller_info();
+            match info {
+                Ok(Some((serial, pid, is_bt, kind, _transport))) => {
+                    let kind_changed = self.controller_kind != Some(kind);
+                    self.controller_serial = Some(serial);
+                    self.controller_is_bt = Some(is_bt);
+                    self.controller_product_id = Some(pid);
+                    self.controller_kind = Some(kind);
+                    if kind_changed {
+                        self.load_profile_for_device();
+                        self.refresh_controller_inventory();
+                    }
+                    if self
+                        .pending_controller_target
+                        .is_some_and(|pending| pending.family == controller::family_of_kind(kind))
+                    {
+                        self.clear_pending_target();
+                        self.status_message = format!("{} connected", kind.label());
+                    }
+                }
+                Ok(None) => {
+                    // A graceful family swap keeps the old controller visible
+                    // for a short grace period instead of flashing Searching.
+                    let grace = self
+                        .pending_controller_target
+                        .is_some_and(|pending| pending.since.elapsed() < Duration::from_secs(3));
+                    if !grace {
+                        self.controller = None;
+                        self.battery_info = None;
+                        self.controller_serial = None;
+                        self.controller_is_bt = None;
+                        self.controller_product_id = None;
+                        self.controller_kind = None;
+                        self.status_message = "Waiting for controller (via daemon)".to_string();
+                    }
+                }
+                Err(_) => {
+                    self.stop_input_polling();
+                    self.disconnect_controller();
+                }
             }
+            self.update_pending_message();
             return;
         }
 
         // Hand off a direct connection once a daemon owns the controller.
         if self.daemon_alive()
+            && !self.daemon_manager.is_detached()
             && let Some(client) = self.daemon_manager.connect_new_client()
-            && matches!(mlock(&client).get_controller_info(), Ok(Some(_)))
         {
-            self.stop_input_polling();
-            self.controller = None;
-            self.connect_via_daemon(client);
-            return;
+            let info = mlock(&client).get_controller_info();
+            match info {
+                Ok(Some(_)) => {
+                    self.connect_via_daemon(client);
+                    self.update_pending_message();
+                    return;
+                }
+                Ok(None) => {
+                    // The compatible daemon owns discovery now. Release the
+                    // direct handle before it can race the daemon.
+                    self.attach_daemon_waiting(client);
+                    self.update_pending_message();
+                    return;
+                }
+                Err(_) => {}
+            }
         }
 
         let Some(serial) = self.controller_serial.clone() else {
             return;
         };
 
-        if self.api.refresh_devices().is_err() {
+        let still_present = controller::is_present(&self.api, &serial);
+
+        if !still_present {
+            if self.pending_controller_target.is_some() && self.attempt_pending_target() {
+                return;
+            }
+            self.stop_input_polling();
+            self.disconnect_controller();
+            self.update_pending_message();
             return;
         }
 
-        let still_present = self.api.device_list().any(|info| {
-            info.vendor_id() == DS_VID
-                && (info.product_id() == DS_PID || info.product_id() == DSE_PID)
-                && info.serial_number() == Some(serial.as_str())
-        });
+        self.evaluate_direct_target();
+    }
 
-        if !still_present {
-            self.stop_input_polling();
-            self.disconnect_controller();
+    fn refresh_hid_devices(&mut self) -> bool {
+        match self.api.refresh_devices() {
+            Ok(()) => true,
+            Err(e) => {
+                if self.discovery_error_limiter.ready() {
+                    let message = format!("Cannot enumerate HID devices: {}", e);
+                    eprintln!("[gyro4u] {}", message);
+                    self.error_message = message;
+                }
+                false
+            }
         }
     }
 
     pub(crate) fn check_for_controller(&mut self) {
         self.last_connection_check = Instant::now();
         self.daemon_manager.refresh();
+        let daemon_compatible = self.daemon_alive();
 
-        if self.daemon_manager.is_active()
-            && self.ipc.is_none()
-            && let Some(client) = self.daemon_manager.connect_new_client()
+        if self.ipc.is_none()
+            && !self.daemon_manager.is_detached()
+            && self.daemon_incompatible.is_none()
         {
-            let available = matches!(mlock(&client).get_controller_info(), Ok(Some(_)));
-            if available {
-                self.connect_via_daemon(client);
+            if let Some(client) = self.daemon_manager.connect_new_client() {
+                let info = mlock(&client).get_controller_info();
+                match info {
+                    Ok(Some(_)) => {
+                        self.connect_via_daemon(client);
+                        return;
+                    }
+                    Ok(None) => {
+                        // A compatible daemon owns discovery; wait for it instead
+                        // of racing it for the HID handle.
+                        self.attach_daemon_waiting(client);
+                        return;
+                    }
+                    Err(e) => {
+                        if self.discovery_error_limiter.ready() {
+                            self.error_message = format!("Daemon connection lost: {}", e);
+                        }
+                    }
+                }
+            } else if daemon_compatible {
+                self.status_message = "Waiting for daemon...".to_string();
+                return;
             }
-            return;
         }
 
-        if self.api.refresh_devices().is_err() {
+        if !self.refresh_hid_devices() {
             return;
         }
+        self.refresh_controller_inventory();
 
-        if self.controller.is_none() && !dualsense::list_devices(&self.api).is_empty() {
+        if self.controller.is_none()
+            && let Some(target) = controller::requested_family(self.settings.controller_preference)
+            && self.current_family() != Some(target)
+        {
+            self.begin_pending_target(target);
+            self.update_pending_message();
+        }
+
+        if self.controller.is_none() && !controller::list_devices(&self.api).is_empty() {
             match self.pending_connect_since {
                 None => {
                     self.pending_connect_since = Some(Instant::now());
@@ -920,6 +1431,9 @@ impl DS4UApp {
             return;
         }
 
+        if self.is_steam() {
+            return;
+        }
         let Some(pid) = self.controller_product_id else {
             return;
         };
@@ -943,7 +1457,11 @@ impl DS4UApp {
     }
 
     pub(crate) fn refresh_firmware_info(&mut self) {
-        let result = if let Some(ref ipc) = self.ipc.clone() {
+        let result = if self.is_steam() {
+            Err(anyhow::anyhow!(
+                "Firmware updates are not supported for the Steam Controller"
+            ))
+        } else if let Some(ref ipc) = self.ipc.clone() {
             mlock(ipc).get_firmware_info()
         } else if let Some(ref ctrl) = self.controller {
             mlock(ctrl).get_firmware_info()
@@ -1123,7 +1641,12 @@ impl DS4UApp {
         t.press_timing = self.remap.press_timing.clone();
         t.stick_digital = self.stick_config();
         t.gyro_mouse = self.gyro.mouse.clone();
+        if !self.capabilities().is_some_and(|caps| caps.motion) {
+            t.gyro_mouse.enabled = false;
+        }
         t.stick_mouse = self.sticks.stick_mouse.clone();
+        t.steam_left_pad_mouse = self.touchpad.left_mouse.clone();
+        t.steam_right_pad_mouse = self.touchpad.right_mouse.clone();
         t.button_remap.clear();
         t.disabled_buttons.clear();
         t.normalize_bindings();
@@ -1207,7 +1730,7 @@ impl DS4UApp {
     }
 
     fn start_touchpad_filter(&mut self) {
-        if self.using_daemon() || self.touchpad_filter.is_some() {
+        if self.is_steam() || self.using_daemon() || self.touchpad_filter.is_some() {
             return;
         }
         self.touchpad_filter = Some(TouchpadFilter::start(self.touchpad.mode));
@@ -1217,55 +1740,141 @@ impl DS4UApp {
         self.touchpad_filter = None;
     }
 
-    pub(crate) fn create_profile(&mut self, name: &str) -> bool {
+    pub(crate) fn create_profile(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        self.profile_convert_offer = None;
         if let Err(e) = ProfileManager::validate_profile_name(name) {
-            self.error_message = e.to_string();
-            return false;
+            let message = e.to_string();
+            self.profile_create_error = message.clone();
+            return Err(message);
         }
-        if name.trim().is_empty() {
-            return false;
-        }
-        if self.profile_manager.profile_exists(name) {
-            self.error_message = format!("Profile '{}' already exists", name);
-            return false;
+        if name.is_empty() {
+            let message = "Profile name cannot be empty".to_string();
+            self.profile_create_error = message.clone();
+            return Err(message);
         }
 
-        let mut p = Profile {
-            name: name.to_string(),
-            ..Default::default()
-        };
+        let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
+        if self.profile_manager.profile_exists(name) {
+            let existing = self.profile_manager.load_profile(name).ok();
+            let message = match profile_name_conflict(existing.as_ref(), kind) {
+                ProfileNameConflict::SameFamily => format!(
+                    "A {} profile named '{}' already exists; choose another name",
+                    controller::family_of_kind(kind).label(),
+                    name
+                ),
+                ProfileNameConflict::OtherFamily => {
+                    let other = existing
+                        .as_ref()
+                        .map(|profile| controller::family_of_kind(profile.device).label())
+                        .unwrap_or("other family");
+                    self.profile_convert_offer = Some(name.to_string());
+                    format!(
+                        "'{}' already exists for {}; convert it to {} in All Profiles",
+                        name,
+                        other,
+                        controller::family_of_kind(kind).label()
+                    )
+                }
+                ProfileNameConflict::None => format!(
+                    "Profile '{}' already exists but could not be read; choose another name",
+                    name
+                ),
+            };
+            self.profile_create_error = message.clone();
+            return Err(message);
+        }
+        self.profile_convert_offer = None;
+
+        let mut p = Profile::default_for_device(name.to_string(), kind);
         if let Some(cur) = &self.current_profile {
             let mut clone = cur.clone();
             clone.name = name.to_string();
+            clone.device = kind;
             p = clone;
         }
-        if self.profile_manager.save_profile(&p).is_err() {
-            return false;
-        }
-        if let Some(ref ipc) = self.ipc.clone() {
-            let _ = mlock(ipc).save_profile(p.clone());
+        self.profile_manager.save_profile(&p).map_err(|e| {
+            let message = format!("Could not save profile '{}': {e}", name);
+            self.profile_create_error = message.clone();
+            message
+        })?;
+        if let Some(ipc) = self.ipc.clone()
+            && let Err(e) = mlock(&ipc).save_profile(p.clone())
+        {
+            let message = format!(
+                "Profile '{}' saved locally but daemon sync failed: {e}",
+                name
+            );
+            self.profile_create_error = message.clone();
+            return Err(message);
         }
         self.load_profile(&p);
-        true
+        self.profile_create_error.clear();
+        self.profile_convert_offer = None;
+        Ok(())
     }
 
-    pub(crate) fn delete_profile(&mut self, name: &str) -> bool {
-        if name == "Default" {
-            return false;
-        }
-        let result = if let Some(ref ipc) = self.ipc.clone() {
-            mlock(ipc).delete_profile(name).is_ok()
-        } else {
-            self.profile_manager.delete_profile(name).is_ok()
+    pub(crate) fn convert_profile(&mut self, name: &str) -> Result<(), String> {
+        let Some(kind) = self.controller_kind else {
+            return Err("No active controller to convert the profile for".to_string());
         };
-        if result
-            && let Some(cur) = self.current_profile.as_ref()
+        let mut profile = self
+            .profile_manager
+            .load_profile(name)
+            .map_err(|e| format!("Could not load profile '{}': {e}", name))?;
+        if profile.matches_device(kind) {
+            return Ok(());
+        }
+        profile.convert_to_device(kind);
+        self.profile_manager
+            .save_profile(&profile)
+            .map_err(|e| format!("Could not save profile '{}': {e}", name))?;
+
+        let daemon_error = if let Some(ipc) = self.ipc.clone() {
+            mlock(&ipc).save_profile(profile.clone()).err()
+        } else {
+            None
+        };
+
+        if self
+            .current_profile
+            .as_ref()
+            .is_some_and(|current| current.name == name)
+        {
+            self.load_profile(&profile);
+        }
+
+        if let Some(e) = daemon_error {
+            return Err(format!(
+                "Profile '{}' converted locally but daemon sync failed: {e}",
+                name
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delete_profile(&mut self, name: &str) -> Result<(), String> {
+        if name == "Default" || name == "SteamDefault" {
+            return Err("Cannot delete the default profile".to_string());
+        }
+        if let Some(ipc) = self.ipc.clone() {
+            mlock(&ipc)
+                .delete_profile(name)
+                .map_err(|e| format!("Failed to delete profile '{}': {e}", name))?;
+        } else {
+            self.profile_manager
+                .delete_profile(name)
+                .map_err(|e| format!("Failed to delete profile '{}': {e}", name))?;
+        }
+        if let Some(cur) = self.current_profile.as_ref()
             && cur.name == name
         {
-            let default = self.profile_manager.ensure_default_exists();
+            let default = self
+                .profile_manager
+                .ensure_default_for(self.controller_kind.unwrap_or(ControllerKind::DualSense));
             self.load_profile(&default);
         }
-        result
+        Ok(())
     }
 
     pub(crate) fn using_daemon(&self) -> bool {
@@ -1275,8 +1884,26 @@ impl DS4UApp {
     pub(crate) fn daemon_alive(&mut self) -> bool {
         if self.last_daemon_probe.elapsed() >= Duration::from_millis(1500) {
             self.last_daemon_probe = Instant::now();
-            let addr = crate::ipc::daemon_endpoint();
-            self.daemon_alive_cached = IpcClient::try_connect(&addr).is_some();
+            match probe_daemon(&crate::ipc::daemon_endpoint()) {
+                DaemonCompatibility::Compatible { .. } => {
+                    self.daemon_alive_cached = true;
+                    self.daemon_incompatible = None;
+                }
+                DaemonCompatibility::Incompatible { detail } => {
+                    if self.daemon_incompatible.as_deref() != Some(detail.as_str()) {
+                        self.error_message = format!(
+                            "Running daemon is incompatible ({detail}). Stop it and start this \
+                             build's daemon."
+                        );
+                    }
+                    self.daemon_alive_cached = false;
+                    self.daemon_incompatible = Some(detail);
+                }
+                DaemonCompatibility::Unavailable { .. } => {
+                    self.daemon_alive_cached = false;
+                    self.daemon_incompatible = None;
+                }
+            }
         }
         self.daemon_alive_cached
     }
@@ -1286,11 +1913,58 @@ impl DS4UApp {
         let _ = self.daemon_alive();
     }
 
-    pub(crate) fn start_daemon_process(&mut self) {
-        if self.daemon_alive() {
-            self.status_message = "Daemon already running".into();
-            return;
+    fn replace_incompatible_daemon(&mut self, detail: &str) -> bool {
+        let addr = crate::ipc::daemon_endpoint();
+        eprintln!("[gyro4u] replacing incompatible daemon: {}", detail);
+
+        if let Err(e) = crate::ipc::shutdown_daemon(&addr) {
+            self.daemon_incompatible = Some(detail.to_string());
+            self.error_message = format!(
+                "Running daemon is incompatible ({detail}) and could not be stopped: {e}. \
+                 Stop it manually and restart Gyro4U."
+            );
+            return false;
         }
+
+        if !crate::ipc::wait_for_daemon_release(&addr, Duration::from_secs(3)) {
+            self.daemon_incompatible = Some(detail.to_string());
+            self.error_message = format!(
+                "Running daemon is incompatible ({detail}) and did not exit within 3 s. \
+                 Stop it manually and restart Gyro4U."
+            );
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+
+        if self.ipc.is_some() {
+            self.stop_input_polling();
+            self.disconnect_controller();
+        }
+        self.daemon_manager.forget_client();
+        self.daemon_alive_cached = false;
+        self.daemon_incompatible = None;
+        true
+    }
+
+    pub(crate) fn start_daemon_process(&mut self) {
+        let addr = crate::ipc::daemon_endpoint();
+        match probe_daemon(&addr) {
+            DaemonCompatibility::Compatible { .. } => {
+                self.daemon_alive_cached = true;
+                self.daemon_incompatible = None;
+                self.status_message = "Daemon already running".into();
+                return;
+            }
+            DaemonCompatibility::Incompatible { detail } => {
+                if !self.replace_incompatible_daemon(&detail) {
+                    return;
+                }
+            }
+            DaemonCompatibility::Unavailable { .. } => {
+                self.daemon_alive_cached = false;
+            }
+        }
+
         let exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(e) => {
@@ -1308,8 +1982,23 @@ impl DS4UApp {
             Ok(_) => {
                 self.status_message = "Daemon starting...".into();
                 self.error_message.clear();
-                std::thread::sleep(Duration::from_millis(250));
-                self.refresh_daemon_state();
+                match crate::ipc::wait_for_daemon_ready(&addr, Duration::from_secs(5)) {
+                    DaemonCompatibility::Compatible { .. } => {
+                        self.status_message = "Daemon started".into();
+                        self.daemon_alive_cached = true;
+                        self.daemon_incompatible = None;
+                        self.daemon_manager.attach();
+                        self.last_daemon_probe = Instant::now();
+                    }
+                    DaemonCompatibility::Incompatible { detail } => {
+                        self.daemon_incompatible = Some(detail.clone());
+                        self.error_message =
+                            format!("Daemon started with an incompatible protocol: {detail}");
+                    }
+                    DaemonCompatibility::Unavailable { detail } => {
+                        self.error_message = format!("Daemon did not start within 5 s: {detail}");
+                    }
+                }
             }
             Err(e) => {
                 self.error_message = format!("Failed to start daemon: {}", e);
@@ -1319,28 +2008,35 @@ impl DS4UApp {
 
     pub(crate) fn stop_daemon_process(&mut self) {
         let addr = crate::ipc::daemon_endpoint();
-        let mut client = match IpcClient::try_connect(&addr) {
-            Some(c) => c,
-            None => {
-                self.error_message = "Daemon is not running".into();
-                self.daemon_alive_cached = false;
-                return;
-            }
-        };
+        if matches!(probe_daemon(&addr), DaemonCompatibility::Unavailable { .. }) {
+            self.error_message = "Daemon is not running".into();
+            self.daemon_alive_cached = false;
+            self.daemon_incompatible = None;
+            return;
+        }
+
         if self.ipc.is_some() {
             self.stop_input_polling();
             self.disconnect_controller();
         }
-        match client.shutdown() {
-            Ok(_) => {
-                self.status_message = "Daemon stopped".into();
-                self.error_message.clear();
+
+        match crate::ipc::shutdown_daemon(&addr) {
+            Ok(()) => {
+                if crate::ipc::wait_for_daemon_release(&addr, Duration::from_secs(3)) {
+                    self.status_message = "Daemon stopped".into();
+                    self.error_message.clear();
+                } else {
+                    self.error_message = "Daemon did not stop within 3 s; stop it manually".into();
+                }
             }
             Err(e) => {
                 self.error_message = format!("Shutdown failed: {}", e);
             }
         }
+
+        self.daemon_manager.forget_client();
         self.daemon_alive_cached = false;
+        self.daemon_incompatible = None;
         self.last_daemon_probe = Instant::now();
     }
 
@@ -1349,23 +2045,22 @@ impl DS4UApp {
         let client = match IpcClient::try_connect(&addr) {
             Some(c) => Arc::new(Mutex::new(c)),
             None => {
-                self.error_message = "Daemon is not running".into();
+                self.error_message = match probe_daemon(&addr) {
+                    DaemonCompatibility::Incompatible { detail } => format!(
+                        "Running daemon is incompatible: {detail}. Stop it from Settings, then \
+                         start this build's daemon."
+                    ),
+                    _ => "Daemon is not running".into(),
+                };
                 return;
             }
         };
-        self.stop_input_polling();
-        self.controller = None;
-        self.battery_info = None;
-        self.controller_serial = None;
-        self.controller_is_bt = None;
-        self.controller_product_id = None;
         let has_dev = matches!(mlock(&client).get_controller_info(), Ok(Some(_)));
+        self.daemon_manager.attach();
         if has_dev {
             self.connect_via_daemon(client);
         } else {
-            self.ipc = Some(client);
-            self.status_message = "Attached to daemon (waiting for device)".into();
-            self.error_message.clear();
+            self.attach_daemon_waiting(client);
         }
     }
 
@@ -1373,8 +2068,126 @@ impl DS4UApp {
         if self.ipc.is_none() {
             return;
         }
+        self.daemon_manager.detach();
         self.stop_input_polling();
         self.disconnect_controller();
-        self.status_message = "Detached from daemon".into();
+        self.status_message = "Detached from daemon (direct mode)".into();
+    }
+
+    pub(crate) fn set_controller_preference(&mut self, preference: ControllerPreference) {
+        // Persist even when the enum is unchanged: the previous switch may
+        // have failed, and re-selecting must retry the target family.
+        self.settings.controller_preference = preference;
+        self.settings_manager.save(&self.settings);
+
+        if self.refresh_hid_devices() {
+            self.refresh_controller_inventory();
+        }
+
+        let current = self.current_family();
+        let target = controller::requested_family(preference).or_else(|| {
+            controller::switch_target(
+                preference,
+                current,
+                self.inventory_has(ControllerFamily::DualSense),
+                self.inventory_has(ControllerFamily::Steam),
+            )
+        });
+        let pending = target.filter(|target| current != Some(*target));
+        if let Some(family) = pending {
+            self.begin_pending_target(family);
+        } else {
+            self.clear_pending_target();
+        }
+        if let Some(ctx) = &self.egui_ctx {
+            ctx.request_repaint();
+        }
+
+        if let Some(ipc) = self.ipc.clone() {
+            match mlock(&ipc).set_controller_preference(preference) {
+                Ok(()) => {
+                    if pending.is_none() {
+                        self.status_message =
+                            format!("Controller preference: {}", preference.label());
+                    }
+                }
+                Err(e) => {
+                    self.error_message = format!("Failed to update daemon preference: {e}");
+                }
+            }
+            self.check_controller_connection();
+            return;
+        }
+
+        if self.controller.is_none() {
+            if pending.is_none() {
+                self.status_message = format!("Controller preference: {}", preference.label());
+            }
+            self.check_for_controller();
+            return;
+        }
+
+        if pending.is_some() {
+            self.update_pending_message();
+            let _ = self.attempt_pending_target();
+        } else {
+            self.status_message = format!("Controller preference: {}", preference.label());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(family: ControllerFamily, age: Duration) -> PendingControllerTarget {
+        PendingControllerTarget {
+            family,
+            since: Instant::now() - age,
+        }
+    }
+
+    #[test]
+    fn steam_pending_uses_wake_copy_while_receiver_only() {
+        let message = pending_status_text(
+            pending(ControllerFamily::Steam, Duration::from_secs(1)),
+            Some(ControllerFamily::DualSense),
+            true,
+            false,
+        );
+
+        assert_eq!(message, STEAM_WAKE_RETRY);
+        assert!(message.contains("turn it on"));
+    }
+
+    #[test]
+    fn steam_pending_switches_copy_when_live() {
+        let message = pending_status_text(
+            pending(ControllerFamily::Steam, Duration::from_secs(1)),
+            Some(ControllerFamily::DualSense),
+            true,
+            true,
+        );
+        assert_eq!(message, "Switching to Steam Controller...");
+
+        let message = pending_status_text(
+            pending(ControllerFamily::Steam, Duration::from_secs(6)),
+            Some(ControllerFamily::DualSense),
+            true,
+            true,
+        );
+        assert_eq!(message, "Could not switch to Steam Controller - retrying");
+    }
+
+    #[test]
+    fn missing_non_steam_target_keeps_current_family_in_the_copy() {
+        let message = pending_status_text(
+            pending(ControllerFamily::DualSense, Duration::from_secs(6)),
+            Some(ControllerFamily::Steam),
+            false,
+            false,
+        );
+
+        assert!(message.contains("still using Steam Controller"));
     }
 }

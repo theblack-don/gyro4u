@@ -89,25 +89,38 @@ impl DS4UApp {
 
                 let alive = self.daemon_alive();
                 let via = self.using_daemon();
+                let incompatible = self.daemon_incompatible.clone();
 
                 ds_row(ui, |ui| {
                     ds_label(ui, "Status");
                     let (txt, col) = if alive {
                         ("Running", c.success())
+                    } else if incompatible.is_some() {
+                        ("Incompatible", c.warning())
                     } else {
                         ("Not running", c.error())
                     };
                     let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
                     ui.painter().circle_filled(dot.center(), 4.0, col);
                     ui.add_space(8.0);
-                    ui.label(RichText::new(txt).size(18.0).color(col));
+                    let resp = ui.label(RichText::new(txt).size(18.0).color(col));
+                    if let Some(detail) = &incompatible {
+                        let _ = resp.on_hover_text(detail);
+                    }
                     ui.add_space(16.0);
                     if alive {
                         if ds_pill_button(ui, &c, "Stop", false).clicked() {
                             self.stop_daemon_process();
                         }
-                    } else if ds_pill_button(ui, &c, "Start", false).clicked() {
-                        self.start_daemon_process();
+                    } else {
+                        let label = if incompatible.is_some() {
+                            "Replace"
+                        } else {
+                            "Start"
+                        };
+                        if ds_pill_button(ui, &c, label, false).clicked() {
+                            self.start_daemon_process();
+                        }
                     }
                     ui.add_space(6.0);
                     if ds_pill_button(ui, &c, "Refresh", false).clicked() {

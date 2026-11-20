@@ -58,7 +58,7 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Gyro4U — DualSense controller utility";
+              description = "Gyro4U — DualSense and Steam Controller utility";
               homepage = "https://github.com/theblack-don/gyro4u";
               license = licenses.mit;
               mainProgram = "gyro4u";
@@ -77,6 +77,12 @@
           type = "app";
           program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.gyro4u}/bin/gyro4u";
         };
+      });
+
+      checks = forAllSystems (pkgs: {
+        gyro4u = self.packages.${pkgs.stdenv.hostPlatform.system}.gyro4u.overrideAttrs (_: {
+          doCheck = true;
+        });
       });
 
       devShells = forAllSystems (pkgs: {

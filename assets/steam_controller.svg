@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 90" width="120" height="90">
+  <!--
+    Steam Controller (2026) front illustration for Gyro4U.
+
+    Adapted from the Steam Controller illustration in lgl-noctalia-widgets
+    (https://github.com/linuxgamerlife/lgl-noctalia-widgets), MIT License,
+    Copyright (c) 2026 Jarek. See THIRD_PARTY_NOTICES.md.
+
+    Modified for Gyro4U: 2026 face layout, correctly separated View/Menu
+    buttons, rotated square trackpads, and stroke weights tuned for the
+    ~760 px live/mapping canvas. Geometry matches src/ui/steam_layout.rs.
+  -->
+  <g fill="none" stroke="#d9dee5" stroke-width="0.32" stroke-linejoin="round" stroke-linecap="round">
+    <!-- Triggers sit behind the shell. -->
+    <rect x="17.2" y="0.7" width="21.0" height="6.6" rx="2.2" fill="#1b1e22"/>
+    <rect x="81.8" y="0.7" width="21.0" height="6.6" rx="2.2" fill="#1b1e22"/>
+
+    <!-- Body and grips. -->
+    <path d="M27 6.7 L93 6.7 C100 6.7 103.5 9.5 105.5 16 C109 27 113.5 45 115.4 60 C116.8 72 115.5 81 109 85.2 C104 88.3 97.5 87 95 83 C93 79.5 91.8 74.5 90 71 C89 69 88 67.6 86 67.6 L34 67.6 C32 67.6 31 69 30 71 C28.2 74.5 27 79.5 25 83 C22.5 87 16 88.3 11 85.2 C4.5 81 3.2 72 4.6 60 C6.5 45 11 27 14.5 16 C16.5 9.5 20 6.7 27 6.7 Z"
+          fill="#25292f" stroke-width="0.44"/>
+
+    <!-- Bumpers. -->
+    <path d="M20.5 8 C21.5 4 23.7 2.6 27.7 2.6 C31.7 2.6 33.9 4 34.9 8 Z" fill="#30353c"/>
+    <path d="M99.5 8 C98.5 4 96.3 2.6 92.3 2.6 C88.3 2.6 86.1 4 85.1 8 Z" fill="#30353c"/>
+
+    <!-- Square pressure-sensitive trackpads, rotated outward. -->
+    <g fill="#15181c">
+      <rect x="26.6" y="38.2" width="21.2" height="20.8" rx="4.5" transform="rotate(-6 37.2 48.6)"/>
+      <rect x="72.2" y="38.2" width="21.2" height="20.8" rx="4.5" transform="rotate(6 82.8 48.6)"/>
+    </g>
+    <g fill="none" stroke="#6f7781" stroke-width="0.2">
+      <rect x="28.0" y="39.6" width="18.4" height="18.0" rx="3.6" transform="rotate(-6 37.2 48.6)"/>
+      <rect x="73.6" y="39.6" width="18.4" height="18.0" rx="3.6" transform="rotate(6 82.8 48.6)"/>
+    </g>
+
+    <!-- D-pad. -->
+    <path d="M24.1 15 H28.1 V19.5 H32.6 V23.5 H28.1 V28 H24.1 V23.5 H19.6 V19.5 H24.1 Z"
+          fill="#30353c"/>
+
+    <!-- Sticks. -->
+    <g fill="#20242a">
+      <circle cx="44.3" cy="26.9" r="5.3"/>
+      <circle cx="75.7" cy="26.9" r="5.3"/>
+    </g>
+    <g fill="#171a1e">
+      <circle cx="44.3" cy="26.9" r="3.5"/>
+      <circle cx="75.7" cy="26.9" r="3.5"/>
+    </g>
+
+    <!-- ABXY face buttons. -->
+    <g fill="#20242a">
+      <circle cx="92.6" cy="15.1" r="2.7"/>
+      <circle cx="87.2" cy="21.5" r="2.7"/>
+      <circle cx="98.2" cy="21.5" r="2.7"/>
+      <circle cx="92.6" cy="27.2" r="2.7"/>
+    </g>
+
+    <!-- Steam, View, Menu and QAM buttons. -->
+    <circle cx="60" cy="19.6" r="3.4" fill="#20242a"/>
+    <circle cx="60" cy="19.6" r="1.25" stroke-width="0.24"/>
+    <path d="M58.9 20.8 L61.2 18.4" stroke-width="0.24"/>
+    <rect x="41.6" y="12.9" width="5.4" height="2.2" rx="1.1" fill="#20242a"/>
+    <rect x="73.0" y="12.9" width="5.4" height="2.2" rx="1.1" fill="#20242a"/>
+    <rect x="55.6" y="48.8" width="8.8" height="2.8" rx="1.4" fill="#20242a"/>
+
+    <!-- Small glyphs: View, Menu, QAM. -->
+    <g stroke-width="0.2">
+      <rect x="42.7" y="13.5" width="1.45" height="1.0" rx="0.15"/>
+      <rect x="43.45" y="13.85" width="1.45" height="1.0" rx="0.15"/>
+      <path d="M74.1 13.5 H77.5 M74.1 14.0 H77.5 M74.1 14.5 H77.5"/>
+      <path d="M58.45 50.2 H58.47 M60 50.2 H60.02 M61.55 50.2 H61.57" stroke-width="0.9" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     common::{HapticPattern, LightbarEffect, MicLedState},
-    dualsense::DualSense,
+    controller::PhysicalController,
     ipc::IpcClient,
     transform::InputTransform,
     util::mlock,
@@ -24,7 +24,7 @@ pub(crate) trait ControllerBackend {
     fn set_input_transform(&self, _transform: InputTransform) {}
 }
 
-pub(crate) struct DirectBackend(pub Arc<Mutex<DualSense>>);
+pub(crate) struct DirectBackend(pub Arc<Mutex<PhysicalController>>);
 
 pub(crate) struct IpcBackend(pub Arc<Mutex<IpcClient>>);
 

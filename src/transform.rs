@@ -5,6 +5,7 @@ use crate::common::TouchpadMode;
 use crate::gyro::GyroConfig;
 use crate::remap::{Binding, BindingSlot, Layer, PressTiming, StickConfig};
 use crate::stick_mouse::StickMouseConfig;
+use crate::trackpad_mouse::SteamPadMouseConfig;
 use crate::{common::SensitivityCurve, inputs::*};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -68,6 +69,10 @@ pub struct InputTransform {
     pub gyro_mouse: GyroConfig,
     #[serde(default)]
     pub stick_mouse: StickMouseConfig,
+    #[serde(default)]
+    pub steam_left_pad_mouse: SteamPadMouseConfig,
+    #[serde(default)]
+    pub steam_right_pad_mouse: SteamPadMouseConfig,
 }
 
 impl Default for InputTransform {
@@ -96,6 +101,8 @@ impl Default for InputTransform {
             touchpad_mode: TouchpadMode::Mouse,
             gyro_mouse: GyroConfig::default(),
             stick_mouse: StickMouseConfig::default(),
+            steam_left_pad_mouse: SteamPadMouseConfig::default(),
+            steam_right_pad_mouse: SteamPadMouseConfig::default(),
         }
     }
 }

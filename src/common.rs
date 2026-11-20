@@ -54,6 +54,12 @@ pub const DS_TRIGGER_EFFECT_WEAPON: u8 = 0x25;
 pub const DS_TRIGGER_EFFECT_VIBRATION: u8 = 0x26;
 pub const DS_TRIGGER_EFFECT_MACHINE: u8 = 0x27;
 
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct BatteryInfo {
+    pub capacity: u8,
+    pub status: String,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
 pub enum TouchpadMode {
     Disabled,

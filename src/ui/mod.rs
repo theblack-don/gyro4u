@@ -21,6 +21,8 @@ pub mod navigation;
 pub mod profiles;
 pub mod settings;
 pub mod sidebar;
+pub mod steam;
+pub mod steam_layout;
 pub mod sticks;
 pub mod touchpad;
 pub mod triggers;
@@ -28,6 +30,9 @@ pub mod widgets;
 
 impl DS4UApp {
     fn render_main(&mut self, ui: &mut Ui) {
+        if !self.section_visible(self.active_section) {
+            self.active_section = Section::Inputs;
+        }
         egui::ScrollArea::vertical().show(ui, |ui| match self.active_section {
             Section::Lightbar => self.render_lightbar_section(ui),
             Section::Triggers => self.render_triggers_section(ui),
@@ -59,7 +64,7 @@ impl DS4UApp {
             ui.add(controller_pic);
 
             ui.label(
-                RichText::new("Connect your DualSense Controller")
+                RichText::new("Connect your controller")
                     .size(32.0)
                     .color(c.text()),
             );
@@ -67,9 +72,12 @@ impl DS4UApp {
             ui.add_space(20.0);
 
             ui.label(
-                RichText::new("Connect via USB cable or Bluetooth")
-                    .size(16.0)
-                    .color(c.text_dim()),
+                RichText::new(
+                    "DualSense / DualSense Edge via USB or Bluetooth, \
+                     or Steam Controller (2026) via USB, Bluetooth, or puck/receiver",
+                )
+                .size(16.0)
+                .color(c.text_dim()),
             );
 
             ui.add_space(15.0);
@@ -108,7 +116,8 @@ impl App for DS4UApp {
                     | Section::Touchpad
                     | Section::Gyroscope
             );
-            let want_poll = !self.firmware.updating && !self.haptic_stream_active();
+            let want_poll =
+                !self.firmware.updating && (!self.haptic_stream_active() || self.is_steam());
 
             if want_poll {
                 if !self.input.polling {
@@ -127,6 +136,7 @@ impl App for DS4UApp {
                         self.input_transform.apply_axes(&mut state);
                     }
                     self.input.controller_state = Some(state);
+                    self.input.last_state_at = Instant::now();
                 }
             } else if self.input.polling {
                 self.stop_input_polling();
@@ -141,6 +151,16 @@ impl App for DS4UApp {
             if self.last_connection_check.elapsed() > Duration::from_secs(1) {
                 self.last_connection_check = Instant::now();
                 self.check_controller_connection();
+            }
+
+            if self.pending_controller_target.is_some() {
+                if self.using_daemon()
+                    && self.last_connection_check.elapsed() > Duration::from_millis(250)
+                {
+                    self.last_connection_check = Instant::now();
+                    self.check_controller_connection();
+                }
+                ctx.request_repaint_after(Duration::from_millis(150));
             }
 
             if self.last_battery_update.elapsed() > Duration::from_secs(2) {

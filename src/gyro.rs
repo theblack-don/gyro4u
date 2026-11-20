@@ -5,13 +5,19 @@ use serde::{Deserialize, Serialize};
 use crate::inputs::{Button, ControllerState};
 
 pub const RAW_COUNTS_PER_DPS: f32 = 16.0;
+#[cfg(test)]
 const TIMESTAMP_UNITS_PER_SECOND: f32 = 3_000_000.0;
 const DT_MIN: f32 = 0.0005;
 const DT_MAX: f32 = 0.02;
 const MAX_COUNTS_PER_TICK: f32 = 4096.0;
 
+#[cfg(test)]
 fn timestamp_delta_seconds(delta: u32) -> f32 {
     delta as f32 / TIMESTAMP_UNITS_PER_SECOND
+}
+
+fn timestamp_delta_seconds_scaled(delta: u32, unit_us: f32) -> f32 {
+    delta as f32 * unit_us.max(f32::EPSILON) / 1_000_000.0
 }
 
 fn clamp_dt(dt: f32) -> f32 {
@@ -65,6 +71,8 @@ pub enum GyroActivation {
     },
     #[default]
     Touchpad,
+    LeftTrackpad,
+    RightTrackpad,
     Trigger {
         button: Button,
         threshold: u8,
@@ -84,6 +92,18 @@ pub enum GyroAcceleration {
 impl GyroConfig {
     pub fn dps_from_raw(&self, raw: [i16; 3]) -> [f32; 3] {
         std::array::from_fn(|i| raw[i] as f32 / RAW_COUNTS_PER_DPS - self.bias_dps[i])
+    }
+
+    pub fn dps_from_state(&self, s: &ControllerState) -> [f32; 3] {
+        let scale = if s.gyro_counts_per_dps.is_finite() && s.gyro_counts_per_dps > 0.0 {
+            s.gyro_counts_per_dps
+        } else {
+            RAW_COUNTS_PER_DPS
+        };
+        if (scale - RAW_COUNTS_PER_DPS).abs() < f32::EPSILON {
+            return self.dps_from_raw(s.gyro);
+        }
+        std::array::from_fn(|i| s.gyro[i] as f32 / scale - self.bias_dps[i])
     }
 
     pub fn acceleration_multiplier(&self, speed: f32) -> f32 {
@@ -169,7 +189,13 @@ impl GyroRuntime {
                 }
                 self.toggle_states.get(button).copied().unwrap_or(false)
             }
-            GyroActivation::Touchpad => touchpad_owned && s.touch_count == 1,
+            GyroActivation::Touchpad => {
+                (touchpad_owned && s.touch_count == 1)
+                    || s.steam_left_pad.touch
+                    || s.steam_right_pad.touch
+            }
+            GyroActivation::LeftTrackpad => s.steam_left_pad.touch,
+            GyroActivation::RightTrackpad => s.steam_right_pad.touch,
             GyroActivation::Trigger { button, threshold } => match button {
                 Button::L2 => s.l2 >= *threshold,
                 Button::R2 => s.r2 >= *threshold,
@@ -213,7 +239,7 @@ impl GyroRuntime {
             return (0, 0);
         }
 
-        let rate = cfg.dps_from_raw(s.gyro);
+        let rate = cfg.dps_from_state(s);
 
         if !self.primed {
             self.prev_ts = s.sensor_timestamp;
@@ -228,7 +254,7 @@ impl GyroRuntime {
         if delta == 0 {
             return (0, 0);
         }
-        let dt = clamp_dt(timestamp_delta_seconds(delta));
+        let dt = clamp_dt(timestamp_delta_seconds_scaled(delta, s.timestamp_unit_us));
 
         if self.filter_primed {
             let smoothing = cfg.smoothing.clamp(0.0, 0.95);
@@ -284,7 +310,7 @@ impl GyroRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inputs::{BTN_CROSS, BTN_L3, BTN_R3, BTN_TRIANGLE, DPAD_NEUTRAL, TouchPoint};
+    use crate::inputs::{BTN_CROSS, BTN_L3, BTN_R3, BTN_TRIANGLE, EXTRA_BTN_RIGHT_PAD_TOUCH};
 
     fn cfg() -> GyroConfig {
         GyroConfig {
@@ -299,19 +325,9 @@ mod tests {
 
     fn sample(ts: u32, gyro: [i16; 3]) -> ControllerState {
         ControllerState {
-            left_x: 128,
-            left_y: 128,
-            right_x: 128,
-            right_y: 128,
-            l2: 0,
-            r2: 0,
-            buttons: 0,
-            dpad: DPAD_NEUTRAL,
             gyro,
-            accel: [0; 3],
             sensor_timestamp: ts,
-            touch_count: 0,
-            touch_points: [TouchPoint::default(); 2],
+            ..ControllerState::default()
         }
     }
 
@@ -799,6 +815,8 @@ mod tests {
         let cases = [
             ("\"Always\"", GyroActivation::Always),
             ("\"Touchpad\"", GyroActivation::Touchpad),
+            ("\"LeftTrackpad\"", GyroActivation::LeftTrackpad),
+            ("\"RightTrackpad\"", GyroActivation::RightTrackpad),
             (
                 "{\"Hold\":{\"button\":\"R3\"}}",
                 GyroActivation::Hold { button: Button::R3 },
@@ -824,6 +842,122 @@ mod tests {
                     .expect("round trip");
             assert_eq!(round, expected);
         }
+    }
+
+    #[test]
+    fn device_scale_metadata_is_used() {
+        let cfg = GyroConfig::default();
+        let sony = sample(0, [1440, 0, 0]);
+        assert_eq!(cfg.dps_from_state(&sony)[0], 90.0);
+
+        let mut triton = sony;
+        triton.gyro = [16384, 0, 0];
+        triton.gyro_counts_per_dps = crate::steam_controller::TRITON_GYRO_COUNTS_PER_DPS;
+        assert!((cfg.dps_from_state(&triton)[0] - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn device_timestamp_units_are_used() {
+        assert!((timestamp_delta_seconds_scaled(1000, 32.0) - 0.032).abs() < 1e-6);
+        assert!((timestamp_delta_seconds_scaled(30_000, 1.0 / 3.0) - 0.01).abs() < 1e-6);
+
+        let mut cfg = cfg();
+        cfg.dots_per_360 = 360.0;
+        let mut runtime = GyroRuntime::new();
+        let mut triton = sample(0, [0, 16384, 0]);
+        triton.gyro_counts_per_dps = crate::steam_controller::TRITON_GYRO_COUNTS_PER_DPS;
+        triton.timestamp_unit_us = 32.0;
+        runtime.process(&triton, &cfg, true);
+        triton.sensor_timestamp = 60;
+        assert_ne!(runtime.process(&triton, &cfg, true).0, 0);
+    }
+
+    #[test]
+    fn steam_pad_touch_activates_touchpad_mode_without_dualsense_ownership() {
+        let cfg = cfg();
+        for which in ["left", "right"] {
+            let mut runtime = GyroRuntime::new();
+            let mut s = sample(0, [0, 1440, 0]);
+            if which == "left" {
+                s.steam_left_pad.touch = true;
+            } else {
+                s.steam_right_pad.touch = true;
+            }
+
+            assert_eq!(runtime.process(&s, &cfg, false), (0, 0));
+            s.sensor_timestamp = 30_000;
+            assert_ne!(runtime.process(&s, &cfg, false).0, 0, "{which} pad");
+        }
+    }
+
+    #[test]
+    fn explicit_trackpad_activation_uses_only_that_pad() {
+        for (activation, which) in [
+            (GyroActivation::LeftTrackpad, "left"),
+            (GyroActivation::RightTrackpad, "right"),
+        ] {
+            let mut cfg = cfg();
+            cfg.activation = activation.clone();
+            let mut runtime = GyroRuntime::new();
+            let mut s = sample(0, [0, 1440, 0]);
+
+            if which == "left" {
+                s.steam_right_pad.touch = true;
+            } else {
+                s.steam_left_pad.touch = true;
+            }
+            assert_eq!(runtime.process(&s, &cfg, false), (0, 0));
+
+            s.steam_left_pad.touch = which == "left";
+            s.steam_right_pad.touch = which == "right";
+            s.sensor_timestamp = 30_000;
+            assert_eq!(runtime.process(&s, &cfg, false), (0, 0));
+            s.sensor_timestamp = 60_000;
+            assert_ne!(runtime.process(&s, &cfg, false).0, 0);
+        }
+    }
+
+    #[test]
+    fn left_pad_does_not_activate_right_trackpad_or_dualsense_touchpad_path() {
+        let mut s = sample(0, [0, 1440, 0]);
+        s.steam_left_pad.touch = true;
+        s.touch_count = 0;
+
+        let mut right_cfg = cfg();
+        right_cfg.activation = GyroActivation::RightTrackpad;
+        assert_eq!(GyroRuntime::new().process(&s, &right_cfg, false), (0, 0));
+
+        let mut touchpad_cfg = cfg();
+        touchpad_cfg.activation = GyroActivation::Touchpad;
+        let mut runtime = GyroRuntime::new();
+        assert_eq!(runtime.process(&s, &touchpad_cfg, false), (0, 0));
+        s.sensor_timestamp = 30_000;
+        assert_ne!(runtime.process(&s, &touchpad_cfg, false).0, 0);
+    }
+
+    #[test]
+    fn hold_right_pad_touch_still_works() {
+        let mut cfg = cfg();
+        cfg.activation = GyroActivation::Hold {
+            button: Button::RightPadTouch,
+        };
+        let mut runtime = GyroRuntime::new();
+        let mut s = sample(0, [0, 1440, 0]);
+
+        assert_eq!(runtime.process(&s, &cfg, false), (0, 0));
+        s.extra_buttons = EXTRA_BTN_RIGHT_PAD_TOUCH;
+        assert_eq!(runtime.process(&s, &cfg, false), (0, 0));
+        s.sensor_timestamp = 30_000;
+        assert_ne!(runtime.process(&s, &cfg, false).0, 0);
+    }
+
+    #[test]
+    fn right_pad_does_not_activate_left_trackpad() {
+        let mut cfg = cfg();
+        cfg.activation = GyroActivation::LeftTrackpad;
+        let mut s = sample(0, [0, 1440, 0]);
+        s.steam_right_pad.touch = true;
+        assert_eq!(GyroRuntime::new().process(&s, &cfg, false), (0, 0));
     }
 
     #[test]

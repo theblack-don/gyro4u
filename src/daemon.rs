@@ -2,7 +2,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     sync::{
         Arc, Condvar, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, sleep},
     time::{Duration, Instant},
@@ -11,23 +11,26 @@ use std::{
 use hidapi::HidApi;
 
 use crate::{
-    common::{HapticPattern, LightbarEffect, TouchpadMode},
-    dualsense::{DualSense, HAPTICS_PACKET_FRAMES, HAPTICS_SAMPLE_RATE},
+    common::{BatteryInfo, HapticPattern, LightbarEffect, TouchpadMode},
+    controller::{self, PhysicalController, PolledInput},
+    dualsense::{HAPTICS_PACKET_FRAMES, HAPTICS_SAMPLE_RATE},
     gyro::GyroRuntime,
     haptics_stream::generate_packet,
     input_grab::InputGrab,
-    inputs::ControllerState,
+    inputs::{ControllerKind, ControllerState},
     ipc::{
-        DaemonCommand, DaemonResponse, DaemonStream, IpcClient, addr_display, bind_daemon,
-        cleanup_endpoint, daemon_endpoint,
+        APP_VERSION, DaemonCommand, DaemonResponse, DaemonStream, IPC_PROTOCOL_VERSION, IpcClient,
+        addr_display, bind_daemon, cleanup_endpoint, daemon_endpoint,
     },
     profiles::ProfileManager,
     remap::{AuxOutput, Binding, ProfileAction, RemapEngine},
     settings::SettingsManager,
+    steam_controller::SteamPadSide,
     stick_mouse::StickMouseRuntime,
     touchpad_filter::{TouchpadFilter, TouchpadModeHandle, TouchpadOwnedHandle},
+    trackpad_mouse::{SteamPadMouseMode, SteamTrackpadMouseRuntime},
     transform::{GyroProcessor, InputTransform},
-    util::{mlock, rlock, wait_cv, wlock},
+    util::{RateLimiter, mlock, rlock, wait_cv, wlock},
     virtual_gamepad::VirtualGamepad,
     virtual_keyboard::VirtualKeyboard,
     virtual_mouse::VirtualMouse,
@@ -35,36 +38,72 @@ use crate::{
 
 const TAG: &str = "[gyro4u daemon]";
 
+const MOTION_STALL_TIMEOUT: Duration = Duration::from_millis(250);
+const MOTION_FORCE_COOLDOWN: Duration = Duration::from_secs(1);
+const MOTION_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+static LAST_MOTION_ERROR_LOG: AtomicU64 = AtomicU64::new(0);
+
 pub struct DaemonManager {
     client: Option<Arc<Mutex<IpcClient>>>,
+    detached: bool,
+    last_attempt: Option<Instant>,
 }
 
 impl DaemonManager {
     pub fn new() -> Self {
-        let addr = daemon_endpoint();
-        let client = IpcClient::try_connect(&addr).map(|c| Arc::new(Mutex::new(c)));
-        Self { client }
+        let mut manager = Self {
+            client: None,
+            detached: false,
+            last_attempt: None,
+        };
+        manager.refresh();
+        manager
     }
 
-    pub fn is_active(&self) -> bool {
-        self.client.is_some()
+    pub fn is_detached(&self) -> bool {
+        self.detached
     }
 
     pub fn refresh(&mut self) {
-        if self.client.is_none() {
-            let addr = daemon_endpoint();
-            self.client = IpcClient::try_connect(&addr).map(|c| Arc::new(Mutex::new(c)));
+        if self.client.is_some() || self.detached {
+            return;
         }
+        if self
+            .last_attempt
+            .is_some_and(|last| last.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.last_attempt = Some(Instant::now());
+        let addr = daemon_endpoint();
+        self.client = IpcClient::try_connect(&addr).map(|c| Arc::new(Mutex::new(c)));
     }
 
     pub fn connect_new_client(&self) -> Option<Arc<Mutex<IpcClient>>> {
+        if self.detached {
+            return None;
+        }
         let addr = daemon_endpoint();
         IpcClient::try_connect(&addr).map(|c| Arc::new(Mutex::new(c)))
     }
 
-    pub fn client(&self) -> Option<Arc<Mutex<IpcClient>>> {
-        self.client.clone()
+    pub fn attach(&mut self) {
+        self.detached = false;
+        self.last_attempt = None;
+        self.refresh();
     }
+
+    pub fn detach(&mut self) {
+        self.client = None;
+        self.detached = true;
+    }
+
+    pub fn forget_client(&mut self) {
+        self.client = None;
+        self.last_attempt = None;
+    }
+
     pub fn set_update_in_progress(&mut self, active: bool) {
         if let Some(ref arc) = self.client {
             let _ = mlock(arc).set_update_mode(active);
@@ -86,21 +125,26 @@ struct DaemonInner {
     gyro: GyroProcessor,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct LatestInput {
     state: ControllerState,
-    status_byte: u8,
+    battery: Option<BatteryInfo>,
     at: Instant,
 }
 
 struct DaemonState {
-    device: Mutex<Option<DualSense>>,
+    device: Mutex<Option<PhysicalController>>,
+    device_kind: RwLock<ControllerKind>,
     grab: Mutex<Option<InputGrab>>,
     update_in_progress: AtomicBool,
     output_reset: AtomicBool,
+    pending_reset: AtomicBool,
+    motion_request: AtomicBool,
+    device_generation: AtomicU64,
     inner: RwLock<DaemonInner>,
     hotplug: (Mutex<bool>, Condvar),
     latest_input: Mutex<Option<LatestInput>>,
+    steam_liveness: Mutex<controller::SteamLiveness>,
     touchpad_mode: TouchpadModeHandle,
     touchpad_owned: TouchpadOwnedHandle,
 }
@@ -109,9 +153,13 @@ impl DaemonState {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             device: Mutex::new(None),
+            device_kind: RwLock::new(ControllerKind::DualSense),
             grab: Mutex::new(None),
             update_in_progress: AtomicBool::new(false),
             output_reset: AtomicBool::new(false),
+            pending_reset: AtomicBool::new(false),
+            motion_request: AtomicBool::new(false),
+            device_generation: AtomicU64::new(0),
             inner: RwLock::new(DaemonInner {
                 active_transform: InputTransform::default(),
                 active_effect: LightbarEffect::None,
@@ -127,6 +175,7 @@ impl DaemonState {
             }),
             hotplug: (Mutex::new(false), Condvar::new()),
             latest_input: Mutex::new(None),
+            steam_liveness: Mutex::new(controller::SteamLiveness::default()),
             touchpad_mode: TouchpadModeHandle::new(TouchpadMode::Mouse),
             touchpad_owned: TouchpadOwnedHandle::new(),
         })
@@ -134,7 +183,18 @@ impl DaemonState {
 }
 
 fn fresh_input(state: &DaemonState) -> Option<LatestInput> {
-    (*mlock(&state.latest_input)).filter(|l| l.at.elapsed() < Duration::from_millis(500))
+    (*mlock(&state.latest_input))
+        .clone()
+        .filter(|l| l.at.elapsed() < Duration::from_millis(500))
+}
+
+fn fresh_battery(state: &DaemonState) -> Option<BatteryInfo> {
+    if let Some(info) = fresh_input(state).and_then(|l| l.battery) {
+        return Some(info);
+    }
+    mlock(&state.device)
+        .as_mut()
+        .and_then(|controller| controller.get_battery().ok())
 }
 
 fn signal_hotplug(state: &DaemonState) {
@@ -143,19 +203,106 @@ fn signal_hotplug(state: &DaemonState) {
     c.notify_all();
 }
 
-fn apply_profile_to_state(state: &Arc<DaemonState>, name: &str) -> String {
-    let pm = ProfileManager::new();
-    let profile = if pm.profile_exists(name) {
-        pm.load_profile(name).ok()
-    } else if pm.profile_exists("Default") {
-        pm.load_profile("Default").ok()
-    } else {
-        Some(pm.ensure_default_exists())
-    };
+fn clear_steam_live(state: &DaemonState) {
+    mlock(&state.steam_liveness).live = None;
+}
 
-    let Some(p) = profile else {
-        return String::new();
+fn apply_steam_probe(cache: &mut controller::SteamLiveness, probe: &controller::SteamProbeResult) {
+    cache.receiver_present = probe.receiver_present;
+    match &probe.state {
+        controller::SteamSlotState::Live(slot) => cache.live = Some(slot.clone()),
+        controller::SteamSlotState::NotLive => cache.live = None,
+        controller::SteamSlotState::Unknown => {
+            if !probe.receiver_present {
+                cache.live = None;
+            }
+        }
+    }
+}
+
+fn bump_device_generation(state: &DaemonState) {
+    state.device_generation.fetch_add(1, Ordering::SeqCst);
+}
+
+fn motion_is_wanted(state: &DaemonState) -> bool {
+    let inner = rlock(&state.inner);
+    inner.active_transform.gyro_mouse.enabled
+        || inner.active_transform.stick_mouse.enabled
+        || state.motion_request.load(Ordering::Relaxed)
+}
+
+fn log_motion_error(context: &str, error: impl std::fmt::Display) {
+    if crate::util::rate_limited_gate(&LAST_MOTION_ERROR_LOG, Duration::from_secs(5)) {
+        eprintln!("{} {context}: {error}", TAG);
+    }
+}
+
+fn reassert_motion(state: &Arc<DaemonState>) {
+    if !motion_is_wanted(state) {
+        return;
+    }
+    let mut dev = mlock(&state.device);
+    if let Some(controller) = dev.as_mut()
+        && let Err(e) = controller.force_motion(true)
+    {
+        log_motion_error("Steam IMU re-enable failed", e);
+    }
+}
+
+fn profile_matches_device(profile_device: ControllerKind, connected: ControllerKind) -> bool {
+    profile_device.is_steam() == connected.is_steam()
+}
+
+/// Keep the client-provided family when no controller is connected; reject an
+/// explicit mismatch rather than silently rewriting a Steam profile.
+fn prepare_profile_for_save(
+    profile: crate::profiles::Profile,
+    active_kind: Option<ControllerKind>,
+) -> Result<crate::profiles::Profile, String> {
+    if let Some(active_kind) = active_kind
+        && !profile_matches_device(profile.device, active_kind)
+    {
+        return Err(format!(
+            "Profile '{}' targets {}, but {} is connected",
+            profile.name,
+            profile.device.label(),
+            active_kind.label()
+        ));
+    }
+    Ok(profile)
+}
+
+fn load_profile_for_kind(
+    manager: &ProfileManager,
+    kind: ControllerKind,
+    preferred_name: &str,
+) -> Option<crate::profiles::Profile> {
+    let matches = |name: &str| {
+        manager
+            .load_profile(name)
+            .ok()
+            .filter(|profile| profile_matches_device(profile.device, kind))
     };
+    if manager.profile_exists(preferred_name)
+        && let Some(profile) = matches(preferred_name)
+    {
+        return Some(profile);
+    }
+    let remembered = SettingsManager::new()
+        .load()
+        .remembered_profile(kind.is_steam())
+        .to_string();
+    if remembered != preferred_name && manager.profile_exists(&remembered) {
+        return matches(&remembered);
+    }
+    None
+}
+
+fn apply_profile_to_state(state: &Arc<DaemonState>, name: &str) -> String {
+    let kind = *rlock(&state.device_kind);
+    let pm = ProfileManager::new();
+    let profile = load_profile_for_kind(&pm, kind, name);
+    let p = profile.unwrap_or_else(|| pm.ensure_default_for(kind));
 
     let mut inner = wlock(&state.inner);
     let mut transform = p.to_input_transform();
@@ -165,6 +312,7 @@ fn apply_profile_to_state(state: &Arc<DaemonState>, name: &str) -> String {
         .touchpad_mode
         .set(inner.active_transform.touchpad_mode);
     state.output_reset.store(true, Ordering::SeqCst);
+    state.pending_reset.store(true, Ordering::SeqCst);
     let r = (p.lightbar_r * 255.0) as u8;
     let g = (p.lightbar_g * 255.0) as u8;
     let b = (p.lightbar_b * 255.0) as u8;
@@ -203,10 +351,11 @@ fn push_triggers_to_device(state: &Arc<DaemonState>) {
 
 fn switch_profile(state: &Arc<DaemonState>, name: &str) -> String {
     let loaded = apply_profile_to_state(state, name);
+    let kind = *rlock(&state.device_kind);
     wlock(&state.inner).active_profile_name = loaded.clone();
     let sm = SettingsManager::new();
     let mut settings = sm.load();
-    settings.profile = loaded.clone();
+    settings.remember_profile(kind.is_steam(), &loaded);
     sm.save(&settings);
     {
         let (color, leds, mic) = {
@@ -221,15 +370,17 @@ fn switch_profile(state: &Arc<DaemonState>, name: &str) -> String {
         }
     }
     push_triggers_to_device(state);
+    reassert_motion(state);
     println!("{} switched to profile '{}'", TAG, loaded);
     loaded
 }
 
 fn cycle_profile(state: &Arc<DaemonState>) -> String {
     let active = rlock(&state.inner).active_profile_name.clone();
-    let profiles = ProfileManager::new().list_profiles();
+    let kind = *rlock(&state.device_kind);
+    let profiles = ProfileManager::new().list_profiles_for(kind);
     let next = if profiles.is_empty() {
-        "Default".to_string()
+        ProfileManager::default_profile_name(kind).to_string()
     } else if let Some(i) = profiles.iter().position(|p| p.name == active) {
         profiles[(i + 1) % profiles.len()].name.clone()
     } else {
@@ -278,19 +429,21 @@ pub fn run_daemon() {
     let listener = bind_daemon(&addr)
         .unwrap_or_else(|e| panic!("{} cannot bind {}: {}", TAG, addr_display(&addr), e));
 
-    println!("{} listening on {}", TAG, addr_display(&addr));
+    println!(
+        "{} listening on {} (IPC protocol {}, app {})",
+        TAG,
+        addr_display(&addr),
+        IPC_PROTOCOL_VERSION,
+        APP_VERSION
+    );
 
     let state = DaemonState::new();
 
     {
         let sm = SettingsManager::new();
         let settings = sm.load();
-        let name = if settings.profile.is_empty() {
-            "Default"
-        } else {
-            &settings.profile
-        };
-        let loaded = apply_profile_to_state(&state, name);
+        let name = settings.remembered_profile(false).to_string();
+        let loaded = apply_profile_to_state(&state, &name);
         wlock(&state.inner).active_profile_name = loaded.clone();
         println!("{} profile '{}' loaded", TAG, loaded);
     }
@@ -308,6 +461,11 @@ pub fn run_daemon() {
     {
         let s = Arc::clone(&state);
         thread::spawn(move || hotplug_thread(s));
+    }
+
+    {
+        let s = Arc::clone(&state);
+        thread::spawn(move || steam_liveness_loop(s));
     }
 
     {
@@ -344,7 +502,110 @@ pub fn run_daemon() {
 enum Poll {
     NoDevice,
     Failed,
-    Data((u16, u16), Option<crate::dualsense::PolledInput>),
+    Data {
+        generation: u64,
+        ids: (u16, u16, ControllerKind),
+        polled: Option<PolledInput>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MotionCommand {
+    Enable { force: bool },
+    Disable,
+}
+
+/// Tracks the daemon's view of the device IMU mode and detects a frozen sensor
+/// timestamp despite fresh input reports.
+struct MotionSync {
+    generation: Option<u64>,
+    applied: bool,
+    last_failure: Option<Instant>,
+    last_timestamp: Option<u32>,
+    timestamp_changed_at: Option<Instant>,
+    last_force: Option<Instant>,
+}
+
+impl MotionSync {
+    fn new() -> Self {
+        Self {
+            generation: None,
+            applied: false,
+            last_failure: None,
+            last_timestamp: None,
+            timestamp_changed_at: None,
+            last_force: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    fn generation(&self) -> Option<u64> {
+        self.generation
+    }
+
+    fn poll(
+        &mut self,
+        now: Instant,
+        generation: u64,
+        want: bool,
+        timestamp: u32,
+    ) -> Option<MotionCommand> {
+        if self.generation != Some(generation) {
+            self.generation = Some(generation);
+            self.applied = false;
+            self.last_failure = None;
+            self.last_force = None;
+            self.last_timestamp = Some(timestamp);
+            self.timestamp_changed_at = Some(now);
+        } else if self.last_timestamp != Some(timestamp) {
+            self.last_timestamp = Some(timestamp);
+            self.timestamp_changed_at = Some(now);
+        }
+
+        let retry_ready = self
+            .last_failure
+            .is_none_or(|last| now.duration_since(last) >= MOTION_RETRY_INTERVAL);
+
+        if !want {
+            return (self.applied && retry_ready).then_some(MotionCommand::Disable);
+        }
+
+        if !self.applied {
+            return retry_ready.then_some(MotionCommand::Enable { force: false });
+        }
+
+        let stalled = self
+            .timestamp_changed_at
+            .is_some_and(|changed| now.duration_since(changed) >= MOTION_STALL_TIMEOUT);
+        let force_ready = self
+            .last_force
+            .is_none_or(|last| now.duration_since(last) >= MOTION_FORCE_COOLDOWN);
+        (stalled && force_ready && retry_ready).then_some(MotionCommand::Enable { force: true })
+    }
+
+    fn confirm(&mut self, now: Instant, command: MotionCommand) {
+        self.last_failure = None;
+        match command {
+            MotionCommand::Enable { force } => {
+                self.applied = true;
+                self.timestamp_changed_at = Some(now);
+                if force {
+                    self.last_force = Some(now);
+                }
+            }
+            MotionCommand::Disable => self.applied = false,
+        }
+    }
+
+    fn failed(&mut self, now: Instant, command: MotionCommand) {
+        self.last_failure = Some(now);
+        if matches!(command, MotionCommand::Enable { force: true }) {
+            self.last_force = Some(now);
+        }
+    }
 }
 
 fn transform_has_binding(transform: &InputTransform, pred: impl Fn(&Binding) -> bool) -> bool {
@@ -373,12 +634,16 @@ fn release_aux(keyboard: &mut Option<VirtualKeyboard>, mouse: &mut Option<Virtua
 
 fn gamepad_loop(state: Arc<DaemonState>) {
     let mut pad: Option<VirtualGamepad> = None;
-    let mut pad_ids: Option<(u16, u16)> = None;
+    let mut pad_ids: Option<(u16, u16, ControllerKind)> = None;
     let mut pad_disabled = false;
+    let mut motion_sync = MotionSync::new();
     let mut remap = RemapEngine::new();
     let mut aux = AuxOutput::default();
     let mut gyro_runtime = GyroRuntime::new();
     let mut stick_mouse = StickMouseRuntime::new();
+    let mut trackpad_mouse = SteamTrackpadMouseRuntime::new();
+    let mut haptic_backoff_until: Option<Instant> = None;
+    let mut haptic_error_log = RateLimiter::new(Duration::from_secs(5));
     let mut keyboard: Option<VirtualKeyboard> = None;
     let mut mouse: Option<VirtualMouse> = None;
     let mut keyboard_disabled = false;
@@ -391,18 +656,27 @@ fn gamepad_loop(state: Arc<DaemonState>) {
             release_aux(&mut keyboard, &mut mouse);
             gyro_runtime.reset();
             stick_mouse.reset();
+            trackpad_mouse.reset();
+            haptic_backoff_until = None;
             if let Some(pad) = pad.as_mut() {
                 pad.reset();
             }
+        }
+
+        if state.pending_reset.swap(false, Ordering::SeqCst) {
+            remap.reset_pending();
         }
 
         if state.update_in_progress.load(Ordering::Relaxed) {
             release_aux(&mut keyboard, &mut mouse);
             pad = None;
             pad_ids = None;
+            motion_sync.reset();
             remap.reset();
             gyro_runtime.reset();
             stick_mouse.reset();
+            trackpad_mouse.reset();
+            haptic_backoff_until = None;
             sleep(Duration::from_millis(20));
             continue;
         }
@@ -411,49 +685,85 @@ fn gamepad_loop(state: Arc<DaemonState>) {
             let mut dev = mlock(&state.device);
             match dev.as_mut() {
                 None => Poll::NoDevice,
-                Some(ds) => {
-                    let ids = (ds.vendor_id(), ds.product_id());
-                    match ds.poll_latest_input() {
-                        Ok(p) => Poll::Data(ids, p),
+                Some(controller) => {
+                    let ids = (
+                        controller.vendor_id(),
+                        controller.product_id(),
+                        controller.kind(),
+                    );
+                    match controller.poll_latest_input() {
+                        Ok(p) => Poll::Data {
+                            generation: state.device_generation.load(Ordering::SeqCst),
+                            ids,
+                            polled: p,
+                        },
                         Err(_) => Poll::Failed,
                     }
                 }
             }
         };
 
-        let (ids, polled) = match poll {
+        let (generation, ids, polled) = match poll {
             Poll::NoDevice => {
                 release_aux(&mut keyboard, &mut mouse);
                 pad = None;
                 pad_ids = None;
+                motion_sync.reset();
                 remap.reset();
                 gyro_runtime.reset();
                 stick_mouse.reset();
+                trackpad_mouse.reset();
+                haptic_backoff_until = None;
                 sleep(Duration::from_millis(20));
                 continue;
             }
             Poll::Failed => {
                 println!("{} input read failed - dropping handle", TAG);
+                if rlock(&state.device_kind).is_steam() {
+                    clear_steam_live(&state);
+                }
                 release_aux(&mut keyboard, &mut mouse);
                 pad = None;
                 pad_ids = None;
+                motion_sync.reset();
                 remap.reset();
                 gyro_runtime.reset();
                 stick_mouse.reset();
+                trackpad_mouse.reset();
+                haptic_backoff_until = None;
                 *mlock(&state.device) = None;
+                bump_device_generation(&state);
                 signal_hotplug(&state);
                 continue;
             }
-            Poll::Data(ids, p) => (ids, p),
+            Poll::Data {
+                generation,
+                ids,
+                polled,
+            } => (generation, ids, polled),
         };
+
+        if motion_sync.generation() != Some(generation) {
+            gyro_runtime.reset();
+            stick_mouse.reset();
+            trackpad_mouse.reset();
+        }
 
         if !pad_disabled && pad_ids != Some(ids) {
             pad = None;
             gyro_runtime.reset();
             stick_mouse.reset();
-            match VirtualGamepad::new(ids.0, ids.1) {
+            trackpad_mouse.reset();
+            haptic_backoff_until = None;
+            match VirtualGamepad::new(ids.2, ids.0, ids.1) {
                 Ok(p) => {
-                    println!("{} virtual gamepad {:04x}:{:04x}", TAG, ids.0, ids.1);
+                    println!(
+                        "{} virtual gamepad {:04x}:{:04x} ({})",
+                        TAG,
+                        ids.0,
+                        ids.1,
+                        ids.2.label()
+                    );
                     pad = Some(p);
                     pad_ids = Some(ids);
                 }
@@ -466,9 +776,22 @@ fn gamepad_loop(state: Arc<DaemonState>) {
 
         let Some(p) = polled else { continue };
 
+        if p.disconnected {
+            println!("{} controller reported a wireless disconnect", TAG);
+            if rlock(&state.device_kind).is_steam() {
+                clear_steam_live(&state);
+            }
+            *mlock(&state.device) = None;
+            *mlock(&state.grab) = None;
+            motion_sync.reset();
+            bump_device_generation(&state);
+            signal_hotplug(&state);
+            continue;
+        }
+
         *mlock(&state.latest_input) = Some(LatestInput {
             state: p.state,
-            status_byte: p.status_byte,
+            battery: p.battery.clone(),
             at: Instant::now(),
         });
 
@@ -476,11 +799,13 @@ fn gamepad_loop(state: Arc<DaemonState>) {
 
         let (transform, touchpad_allowed) = {
             let inner = rlock(&state.inner);
-            let touchpad_allowed = state.touchpad_owned.get()
-                && matches!(
-                    state.touchpad_mode.get(),
-                    TouchpadMode::Disabled | TouchpadMode::GesturesOnly
-                );
+            let kind = *rlock(&state.device_kind);
+            let touchpad_allowed = kind.is_steam()
+                || (state.touchpad_owned.get()
+                    && matches!(
+                        state.touchpad_mode.get(),
+                        TouchpadMode::Disabled | TouchpadMode::GesturesOnly
+                    ));
             (inner.active_transform.clone(), touchpad_allowed)
         };
 
@@ -500,6 +825,14 @@ fn gamepad_loop(state: Arc<DaemonState>) {
 
         let wants_mouse = transform.stick_mouse.enabled
             || transform.gyro_mouse.enabled
+            || matches!(
+                transform.steam_left_pad_mouse.mode,
+                SteamPadMouseMode::Mouse | SteamPadMouseMode::Scroll
+            )
+            || matches!(
+                transform.steam_right_pad_mouse.mode,
+                SteamPadMouseMode::Mouse | SteamPadMouseMode::Scroll
+            )
             || transform_has_binding(&transform, |b| {
                 matches!(b, Binding::Mouse(_) | Binding::Wheel(_))
             });
@@ -516,12 +849,50 @@ fn gamepad_loop(state: Arc<DaemonState>) {
             }
         }
 
+        let want_motion = transform.gyro_mouse.enabled
+            || transform.stick_mouse.enabled
+            || state.motion_request.load(Ordering::Relaxed);
+        let now = Instant::now();
+        if let Some(command) =
+            motion_sync.poll(now, generation, want_motion, p.state.sensor_timestamp)
+        {
+            let outcome = mlock(&state.device)
+                .as_mut()
+                .map(|controller| match command {
+                    MotionCommand::Enable { force: true } => controller.force_motion(true),
+                    MotionCommand::Enable { force: false } => controller.set_motion(true),
+                    MotionCommand::Disable => controller.set_motion(false),
+                });
+            match outcome {
+                Some(Ok(())) => {
+                    motion_sync.confirm(now, command);
+                    if matches!(command, MotionCommand::Enable { force: true }) {
+                        gyro_runtime.reset();
+                        stick_mouse.reset();
+                    }
+                }
+                Some(Err(e)) => {
+                    motion_sync.failed(now, command);
+                    log_motion_error("controller motion write failed", e);
+                }
+                None => {}
+            }
+        }
+
         let gyro_rel =
             gyro_runtime.process(&p.state, &transform.gyro_mouse, state.touchpad_owned.get());
         let stick_rel = stick_mouse.process(
             (p.state.right_x, p.state.right_y),
             &transform.stick_mouse,
             p.state.sensor_timestamp,
+            p.state.timestamp_unit_us,
+        );
+        let pad_output = trackpad_mouse.process(
+            &p.state.steam_left_pad,
+            &transform.steam_left_pad_mouse,
+            &p.state.steam_right_pad,
+            &transform.steam_right_pad_mouse,
+            Instant::now(),
         );
         let raw_left = (p.state.left_x, p.state.left_y);
         let raw_right = (p.state.right_x, p.state.right_y);
@@ -541,13 +912,53 @@ fn gamepad_loop(state: Arc<DaemonState>) {
             raw_right,
             &mut aux,
         );
-        aux.rel = (gyro_rel.0 + stick_rel.0, gyro_rel.1 + stick_rel.1);
+        aux.rel = (
+            gyro_rel.0 + stick_rel.0 + pad_output.rel.0,
+            gyro_rel.1 + stick_rel.1 + pad_output.rel.1,
+        );
+        aux.wheel.0 += pad_output.wheel.0;
+        aux.wheel.1 += pad_output.wheel.1;
         let _ = pad.update(&st);
         if let Some(keyboard) = keyboard.as_mut() {
             let _ = keyboard.apply(&aux.keys);
         }
         if let Some(mouse) = mouse.as_mut() {
             let _ = mouse.apply(&aux.mouse_buttons, aux.rel, aux.wheel);
+        }
+
+        let [left_haptic, right_haptic] = pad_output.haptics;
+        if (left_haptic.is_some() || right_haptic.is_some())
+            && haptic_backoff_until.is_none_or(|until| Instant::now() >= until)
+        {
+            let mut dev = mlock(&state.device);
+            if let Some(device) = dev.as_mut()
+                && device.capabilities().trackpad_haptics
+            {
+                let events = [
+                    (
+                        SteamPadSide::Left,
+                        left_haptic,
+                        transform.steam_left_pad_mouse.haptic_strength.gain_db(),
+                    ),
+                    (
+                        SteamPadSide::Right,
+                        right_haptic,
+                        transform.steam_right_pad_mouse.haptic_strength.gain_db(),
+                    ),
+                ];
+                for (side, haptic, gain_db) in events {
+                    let (Some(haptic), Some(gain_db)) = (haptic, gain_db) else {
+                        continue;
+                    };
+                    if let Err(e) = device.steam_pad_haptic(side, haptic, gain_db) {
+                        haptic_backoff_until = Some(Instant::now() + Duration::from_millis(500));
+                        if haptic_error_log.ready() {
+                            eprintln!("{} pad haptic write failed: {e}", TAG);
+                        }
+                        break;
+                    }
+                }
+            }
         }
 
         // Apply after this tick's outputs; the next tick picks up the new profile.
@@ -564,38 +975,178 @@ fn gamepad_loop(state: Arc<DaemonState>) {
     }
 }
 
+fn activate_controller(
+    state: &Arc<DaemonState>,
+    dev: &mut Option<PhysicalController>,
+    mut controller: PhysicalController,
+) {
+    let info = controller.info().clone();
+    println!(
+        "{} controller connected: {} ({}, {})",
+        TAG,
+        info.kind.label(),
+        info.serial,
+        info.transport
+    );
+
+    *wlock(&state.device_kind) = info.kind;
+    let remembered = SettingsManager::new()
+        .load()
+        .remembered_profile(info.kind.is_steam())
+        .to_string();
+    let loaded = apply_profile_to_state(state, &remembered);
+    wlock(&state.inner).active_profile_name = loaded;
+
+    let (want_motion, snap) = {
+        let i = rlock(&state.inner);
+        (
+            i.active_transform.gyro_mouse.enabled
+                || i.active_transform.stick_mouse.enabled
+                || state.motion_request.load(Ordering::Relaxed),
+            (
+                i.lightbar_color,
+                i.player_leds,
+                i.mic_enabled,
+                i.trigger_left,
+                i.trigger_right,
+            ),
+        )
+    };
+    let ((r, g, b, br), leds, mic, tl, tr) = snap;
+    let _ = controller.set_lightbar(r, g, b, br);
+    let _ = controller.set_player_leds(leds);
+    let _ = controller.set_mic(mic);
+    let l = tl.or(Some((0x05, [0u8; 10])));
+    let r2 = tr.or(Some((0x05, [0u8; 10])));
+    let _ = controller.set_trigger_effects(l, r2);
+
+    // A replaced handle for the same Steam controller must not restore lizard
+    // or IMU state when it is dropped; the new handle owns the device now.
+    let same_steam_device = info.kind.is_steam()
+        && dev
+            .as_ref()
+            .is_some_and(|old| old.kind().is_steam() && old.info().identity == info.identity);
+    let was_steam = dev.as_ref().is_some_and(|old| old.kind().is_steam());
+
+    // Swap the handles while still holding the device lock so IPC clients
+    // never observe a gap. The old controller is dropped afterwards.
+    let mut old = dev.replace(controller);
+    if same_steam_device && let Some(old) = old.as_mut() {
+        old.set_restore_on_drop(false);
+    }
+    drop(old);
+
+    if was_steam && !info.kind.is_steam() {
+        // Let the idle probe re-establish receiver liveness for the new
+        // DualSense-active state instead of trusting a pre-switch snapshot.
+        clear_steam_live(state);
+    }
+
+    // Reassert after the old handle is gone so its drop cannot clobber it.
+    if let Some(controller) = dev.as_mut() {
+        let result = if want_motion {
+            controller.force_motion(true)
+        } else {
+            controller.set_motion(false)
+        };
+        if let Err(e) = result {
+            log_motion_error("Steam IMU setup failed after activation", e);
+        }
+    }
+    bump_device_generation(state);
+}
+
 fn device_connection_loop(state: Arc<DaemonState>) {
+    let mut hid_error_log = crate::util::RateLimiter::new(Duration::from_secs(30));
+    let mut discovery_error_log = crate::util::RateLimiter::new(Duration::from_secs(30));
+    let mut switch_error_log = crate::util::RateLimiter::new(Duration::from_secs(30));
+    let mut no_device_log = crate::util::RateLimiter::new(Duration::from_secs(300));
+
     loop {
+        let mut connected_now = false;
         if !state.update_in_progress.load(Ordering::Relaxed) {
-            let mut connected_now = false;
+            let settings = SettingsManager::new().load();
+            let preference = settings.controller_preference;
             let mut dev = mlock(&state.device);
-            if dev.is_none()
-                && let Ok(api) = HidApi::new()
-                && let Ok(mut ds) = DualSense::new(&api, None)
-            {
-                println!("{} controller connected: {}", TAG, ds.serial());
 
-                let snap = {
-                    let i = rlock(&state.inner);
-                    (
-                        i.lightbar_color,
-                        i.player_leds,
-                        i.mic_enabled,
-                        i.trigger_left,
-                        i.trigger_right,
-                    )
-                };
-                let ((r, g, b, br), leds, mic, tl, tr) = snap;
-                let _ = ds.set_lightbar(r, g, b, br);
-                let _ = ds.set_player_leds(leds);
-                let _ = ds.set_mic(mic);
-                let l = tl.or(Some((0x05, [0u8; 10])));
-                let r2 = tr.or(Some((0x05, [0u8; 10])));
-                let _ = ds.set_trigger_effects(l, r2);
+            match HidApi::new() {
+                Ok(api) => {
+                    let (dualsense_present, steam_present) =
+                        controller::present_families(&api, None);
+                    let current_family = dev
+                        .as_ref()
+                        .map(|device| controller::family_of_kind(device.kind()));
+                    let target = controller::requested_family(preference).or_else(|| {
+                        controller::switch_target(
+                            preference,
+                            current_family,
+                            dualsense_present,
+                            steam_present,
+                        )
+                    });
 
-                *dev = Some(ds);
-
-                connected_now = true;
+                    if let Some(target) = target
+                        && current_family.is_some()
+                        && current_family != Some(target)
+                    {
+                        // Open the requested target before dropping the
+                        // current controller. A failed switch keeps it.
+                        let target_preference =
+                            if controller::requested_family(preference).is_some() {
+                                target.preference()
+                            } else {
+                                preference
+                            };
+                        match PhysicalController::discover(&api, None, target_preference) {
+                            Ok(controller) => {
+                                println!("{} switching controller to {}", TAG, target.label());
+                                activate_controller(&state, &mut dev, controller);
+                                connected_now = true;
+                            }
+                            Err(e) => {
+                                if switch_error_log.ready() {
+                                    eprintln!(
+                                        "{} cannot switch to {} yet: {}",
+                                        TAG,
+                                        target.label(),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    } else if dev.is_none() {
+                        match PhysicalController::discover(&api, None, preference) {
+                            Ok(controller) => {
+                                activate_controller(&state, &mut dev, controller);
+                                connected_now = true;
+                            }
+                            Err(e) => {
+                                let message = e.to_string();
+                                let no_controller = message.starts_with("No supported controller");
+                                let limiter = if no_controller {
+                                    &mut no_device_log
+                                } else {
+                                    &mut discovery_error_log
+                                };
+                                if limiter.ready() {
+                                    if no_controller {
+                                        println!("{} waiting for a controller", TAG);
+                                    } else {
+                                        eprintln!(
+                                            "{} controller discovery failed: {}",
+                                            TAG, message
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if hid_error_log.ready() {
+                        eprintln!("{} cannot initialize HID API: {}", TAG, e);
+                    }
+                }
             }
 
             drop(dev);
@@ -668,6 +1219,85 @@ fn hotplug_thread(state: Arc<DaemonState>) {
     }
 }
 
+const STEAM_IDLE_PROBE: Duration = Duration::from_secs(1);
+const STEAM_LIVE_REVALIDATE: Duration = Duration::from_secs(5);
+
+/// Watches idle Steam puck/receiver slots while another family is active. The
+/// probe is read-only; a no-live -> live transition wakes the device loop so an
+/// explicit Steam target can open immediately.
+fn steam_liveness_loop(state: Arc<DaemonState>) {
+    loop {
+        if state.update_in_progress.load(Ordering::Relaxed) {
+            sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        let active_steam = match state.device.try_lock() {
+            Ok(device) => device
+                .as_ref()
+                .is_some_and(|controller| controller.kind().is_steam()),
+            Err(_) => {
+                sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+        if active_steam {
+            sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        let before = (*mlock(&state.steam_liveness)).clone();
+        let probe = HidApi::new()
+            .ok()
+            .map(|api| controller::probe_steam_slots(&api));
+
+        if let Some(probe) = probe {
+            let mut after = before.clone();
+            apply_steam_probe(&mut after, &probe);
+            *mlock(&state.steam_liveness) = after.clone();
+
+            match (&before.live, &after.live) {
+                (None, Some(slot)) => {
+                    println!(
+                        "{} Steam Controller live on {} ({})",
+                        TAG, slot.transport, slot.identity
+                    );
+                    signal_hotplug(&state);
+                }
+                (Some(_), None) => {
+                    println!("{} Steam Controller no longer live", TAG);
+                }
+                (Some(old), Some(new)) if old != new => {
+                    println!(
+                        "{} Steam Controller moved to {} ({})",
+                        TAG, new.transport, new.identity
+                    );
+                }
+                _ => {}
+            }
+
+            if before.receiver_present != after.receiver_present {
+                println!(
+                    "{} Steam receiver {}",
+                    TAG,
+                    if after.receiver_present {
+                        "detected"
+                    } else {
+                        "removed"
+                    }
+                );
+            }
+        }
+
+        let interval = if mlock(&state.steam_liveness).live.is_some() {
+            STEAM_LIVE_REVALIDATE
+        } else {
+            STEAM_IDLE_PROBE
+        };
+        sleep(interval);
+    }
+}
+
 fn no_input_resp(state: &DaemonState) -> DaemonResponse {
     if mlock(&state.device).is_some() {
         DaemonResponse::Error {
@@ -716,13 +1346,54 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
         };
 
         match cmd {
-            DaemonCommand::Ping => {
-                send(&mut writer, DaemonResponse::Pong);
+            DaemonCommand::Ping {
+                protocol,
+                app_version,
+            } => {
+                if protocol == IPC_PROTOCOL_VERSION {
+                    send(
+                        &mut writer,
+                        DaemonResponse::Pong {
+                            protocol: IPC_PROTOCOL_VERSION,
+                            app_version: APP_VERSION.to_string(),
+                        },
+                    );
+                } else {
+                    println!(
+                        "{} rejected incompatible client (protocol {}, app {})",
+                        TAG, protocol, app_version
+                    );
+                    send(
+                        &mut writer,
+                        DaemonResponse::IncompatibleProtocol {
+                            daemon_protocol: IPC_PROTOCOL_VERSION,
+                            daemon_version: APP_VERSION.to_string(),
+                        },
+                    );
+                }
+            }
+
+            DaemonCommand::SetControllerPreference { preference } => {
+                let manager = SettingsManager::new();
+                let mut settings = manager.load();
+                settings.controller_preference = preference;
+                manager.save(&settings);
+                println!(
+                    "{} controller preference set to {}",
+                    TAG,
+                    preference.label()
+                );
+                signal_hotplug(&state);
+                send(&mut writer, DaemonResponse::Ok);
             }
 
             DaemonCommand::Shutdown => {
                 send(&mut writer, DaemonResponse::Ok);
                 println!("{} shutdown requested via IPC", TAG);
+                *mlock(&state.grab) = None;
+                // Drop the HID handle first so a Steam Controller restores
+                // lizard mode before the process exits.
+                *mlock(&state.device) = None;
                 std::process::exit(0);
             }
 
@@ -731,6 +1402,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                     state.update_in_progress.store(true, Ordering::SeqCst);
                     *mlock(&state.device) = None;
                     *mlock(&state.grab) = None;
+                    bump_device_generation(&state);
                     println!("{} device released for firmware update", TAG);
                 } else {
                     state.update_in_progress.store(false, Ordering::SeqCst);
@@ -750,7 +1422,11 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                         || inner.active_transform.press_timing != transform.press_timing
                         || inner.active_transform.stick_digital != transform.stick_digital
                         || inner.active_transform.gyro_mouse != transform.gyro_mouse
-                        || inner.active_transform.stick_mouse != transform.stick_mouse;
+                        || inner.active_transform.stick_mouse != transform.stick_mouse
+                        || inner.active_transform.steam_left_pad_mouse
+                            != transform.steam_left_pad_mouse
+                        || inner.active_transform.steam_right_pad_mouse
+                            != transform.steam_right_pad_mouse;
                     inner.active_transform = transform;
                     changed
                 };
@@ -765,6 +1441,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 state.touchpad_mode.set(transform.touchpad_mode);
                 wlock(&state.inner).active_transform = transform;
                 state.output_reset.store(true, Ordering::SeqCst);
+                state.pending_reset.store(true, Ordering::SeqCst);
                 send(&mut writer, DaemonResponse::Ok);
             }
 
@@ -857,26 +1534,36 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 };
                 apply_profile_to_state(&state, &name);
                 push_triggers_to_device(&state);
+                reassert_motion(&state);
                 println!("{} reloaded profile '{}'", TAG, name);
                 send(&mut writer, DaemonResponse::Ok);
             }
 
             DaemonCommand::ListProfiles => {
                 let pm = ProfileManager::new();
-                let profiles = pm.list_profiles().into_iter().map(|p| p.name).collect();
+                let kind = *rlock(&state.device_kind);
+                let profiles = pm
+                    .list_profiles_for(kind)
+                    .into_iter()
+                    .map(|p| p.name)
+                    .collect();
                 send(&mut writer, DaemonResponse::ProfileList { profiles });
             }
 
             DaemonCommand::SaveProfile { profile } => {
                 let pm = ProfileManager::new();
-                match pm.save_profile(&profile) {
-                    Ok(_) => send(&mut writer, DaemonResponse::Ok),
-                    Err(e) => send(
-                        &mut writer,
-                        DaemonResponse::Error {
-                            message: e.to_string(),
-                        },
-                    ),
+                let active_kind = mlock(&state.device).as_ref().map(PhysicalController::kind);
+                match prepare_profile_for_save(profile, active_kind) {
+                    Ok(profile) => match pm.save_profile(&profile) {
+                        Ok(_) => send(&mut writer, DaemonResponse::Ok),
+                        Err(e) => send(
+                            &mut writer,
+                            DaemonResponse::Error {
+                                message: e.to_string(),
+                            },
+                        ),
+                    },
+                    Err(message) => send(&mut writer, DaemonResponse::Error { message }),
                 }
             }
 
@@ -907,13 +1594,30 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 None => send(&mut writer, no_input_resp(&state)),
             },
 
-            DaemonCommand::GetBattery => match fresh_input(&state) {
-                Some(l) => send(
-                    &mut writer,
-                    DaemonResponse::Battery(DualSense::battery_from_status(l.status_byte)),
-                ),
+            DaemonCommand::GetBattery => match fresh_battery(&state) {
+                Some(info) => send(&mut writer, DaemonResponse::Battery(info)),
                 None => send(&mut writer, no_input_resp(&state)),
             },
+
+            DaemonCommand::GetSteamLiveness => {
+                let liveness = (*mlock(&state.steam_liveness)).clone();
+                send(&mut writer, DaemonResponse::SteamLiveness(liveness));
+            }
+
+            DaemonCommand::SetMotion { enabled } => {
+                state.motion_request.store(enabled, Ordering::Relaxed);
+                if let Some(controller) = mlock(&state.device).as_mut() {
+                    let result = if enabled {
+                        controller.force_motion(true)
+                    } else {
+                        controller.set_motion(false)
+                    };
+                    if let Err(e) = result {
+                        log_motion_error("IPC motion request failed", e);
+                    }
+                }
+                send(&mut writer, DaemonResponse::Ok);
+            }
 
             cmd @ (DaemonCommand::GetFirmwareInfo | DaemonCommand::GetControllerInfo) => {
                 let transform = rlock(&state.inner).active_transform.clone();
@@ -994,6 +1698,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                         if failed {
                             println!("{} device error - dropping handle", TAG);
                             *dev = None;
+                            bump_device_generation(&state);
                             let (l, c) = &state.hotplug;
                             *mlock(l) = true;
                             c.notify_all();
@@ -1166,7 +1871,11 @@ fn raw_haptic_loop(state: Arc<DaemonState>) {
     }
 }
 
-fn dispatch(ds: &mut DualSense, cmd: DaemonCommand, transform: &InputTransform) -> DaemonResponse {
+fn dispatch(
+    device: &mut PhysicalController,
+    cmd: DaemonCommand,
+    transform: &InputTransform,
+) -> DaemonResponse {
     macro_rules! ok_or_err {
         ($e:expr) => {
             match $e {
@@ -1179,16 +1888,19 @@ fn dispatch(ds: &mut DualSense, cmd: DaemonCommand, transform: &InputTransform) 
     }
 
     match cmd {
-        DaemonCommand::Ping => DaemonResponse::Pong,
+        DaemonCommand::Ping { .. } => DaemonResponse::Pong {
+            protocol: IPC_PROTOCOL_VERSION,
+            app_version: APP_VERSION.to_string(),
+        },
 
-        DaemonCommand::GetBattery => match ds.get_battery() {
+        DaemonCommand::GetBattery => match device.get_battery() {
             Ok(b) => DaemonResponse::Battery(b),
             Err(e) => DaemonResponse::Error {
                 message: e.to_string(),
             },
         },
 
-        DaemonCommand::GetInputState => match ds.get_input_state() {
+        DaemonCommand::GetInputState => match device.get_input_state() {
             Ok(mut s) => {
                 transform.apply_axes(&mut s);
                 DaemonResponse::InputState(s)
@@ -1198,7 +1910,7 @@ fn dispatch(ds: &mut DualSense, cmd: DaemonCommand, transform: &InputTransform) 
             },
         },
 
-        DaemonCommand::GetFirmwareInfo => match ds.get_firmware_info() {
+        DaemonCommand::GetFirmwareInfo => match device.get_firmware_info() {
             Ok((v, d, t)) => DaemonResponse::FirmwareInfo {
                 version: v,
                 build_date: d,
@@ -1210,9 +1922,11 @@ fn dispatch(ds: &mut DualSense, cmd: DaemonCommand, transform: &InputTransform) 
         },
 
         DaemonCommand::GetControllerInfo => DaemonResponse::ControllerInfo {
-            serial: ds.serial().to_string(),
-            product_id: ds.product_id(),
-            is_bt: ds.is_bluetooth(),
+            serial: device.serial().to_string(),
+            product_id: device.product_id(),
+            is_bt: device.is_bluetooth(),
+            kind: device.kind(),
+            transport: device.info().transport.clone(),
         },
 
         DaemonCommand::SetLightbar {
@@ -1220,39 +1934,237 @@ fn dispatch(ds: &mut DualSense, cmd: DaemonCommand, transform: &InputTransform) 
             g,
             b,
             brightness,
-        } => ok_or_err!(ds.set_lightbar(r, g, b, brightness)),
+        } => ok_or_err!(device.set_lightbar(r, g, b, brightness)),
 
         DaemonCommand::SetLightbarEnabled { enabled } => {
-            ok_or_err!(ds.set_lightbar_enabled(enabled))
+            ok_or_err!(device.set_lightbar_enabled(enabled))
         }
 
-        DaemonCommand::SetPlayerLeds { leds } => ok_or_err!(ds.set_player_leds(leds)),
+        DaemonCommand::SetPlayerLeds { leds } => ok_or_err!(device.set_player_leds(leds)),
 
-        DaemonCommand::SetMic { enabled } => ok_or_err!(ds.set_mic(enabled)),
+        DaemonCommand::SetMic { enabled } => ok_or_err!(device.set_mic(enabled)),
 
-        DaemonCommand::SetMicLed { state } => ok_or_err!(ds.set_mic_led(state)),
+        DaemonCommand::SetMicLed { state } => ok_or_err!(device.set_mic_led(state)),
 
-        DaemonCommand::SetTriggerOff => ok_or_err!(ds.set_trigger_off()),
+        DaemonCommand::SetTriggerOff => ok_or_err!(device.set_trigger_off()),
 
         DaemonCommand::SetTriggerEffect {
             right,
             left,
             effect_type,
             params,
-        } => ok_or_err!(ds.set_trigger_effect(left, right, effect_type, &params)),
+        } => ok_or_err!(device.set_trigger_effect(left, right, effect_type, &params)),
 
         DaemonCommand::SetVibration { rumble, trigger } => {
-            ok_or_err!(ds.set_vibration(rumble, trigger))
+            ok_or_err!(device.set_vibration(rumble, trigger))
         }
 
         DaemonCommand::SetRumble { left, right } => {
-            ok_or_err!(ds.set_rumble(left, right))
+            ok_or_err!(device.set_rumble(left, right))
         }
 
-        DaemonCommand::SetSpeaker { mode } => ok_or_err!(ds.set_speaker(&mode)),
+        DaemonCommand::SetSpeaker { mode } => ok_or_err!(device.set_speaker(&mode)),
 
-        DaemonCommand::SetVolume { volume } => ok_or_err!(ds.set_volume(volume)),
+        DaemonCommand::SetVolume { volume } => ok_or_err!(device.set_volume(volume)),
 
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profiles::Profile;
+
+    fn profile(device: ControllerKind) -> Profile {
+        Profile {
+            name: "TheFinals".into(),
+            device,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn stick_mouse_alone_requests_imu() {
+        let state = DaemonState::new();
+        assert!(!motion_is_wanted(&state));
+        wlock(&state.inner).active_transform.stick_mouse.enabled = true;
+        assert!(motion_is_wanted(&state));
+    }
+
+    #[test]
+    fn motion_sync_requires_one_enable_then_disables_once() {
+        let start = Instant::now();
+        let mut sync = MotionSync::new();
+
+        let enable = sync.poll(start, 1, true, 10);
+        assert_eq!(enable, Some(MotionCommand::Enable { force: false }));
+        sync.confirm(start, enable.unwrap());
+        assert_eq!(sync.poll(start, 1, true, 10), None);
+
+        let disable = sync.poll(start + Duration::from_millis(10), 1, false, 10);
+        assert_eq!(disable, Some(MotionCommand::Disable));
+        sync.confirm(start + Duration::from_millis(10), disable.unwrap());
+        assert_eq!(
+            sync.poll(start + Duration::from_millis(20), 1, false, 10),
+            None
+        );
+    }
+
+    #[test]
+    fn motion_sync_stays_quiet_while_timestamp_advances() {
+        let start = Instant::now();
+        let mut sync = MotionSync::new();
+        let enable = sync.poll(start, 1, true, 0).expect("initial IMU enable");
+        sync.confirm(start, enable);
+
+        for tick in 1..=10 {
+            let now = start + Duration::from_millis(tick * 40);
+            assert_eq!(
+                sync.poll(now, 1, true, tick as u32),
+                None,
+                "advancing timestamp tick {tick}"
+            );
+        }
+    }
+
+    #[test]
+    fn motion_sync_forces_once_per_cooldown_when_timestamp_stalls() {
+        let start = Instant::now();
+        let mut sync = MotionSync::new();
+        let enable = sync.poll(start, 1, true, 42).expect("initial IMU enable");
+        sync.confirm(start, enable);
+
+        assert_eq!(
+            sync.poll(start + Duration::from_millis(249), 1, true, 42),
+            None
+        );
+
+        let forced_at = start + Duration::from_millis(250);
+        let force = sync.poll(forced_at, 1, true, 42);
+        assert_eq!(force, Some(MotionCommand::Enable { force: true }));
+        sync.confirm(forced_at, force.unwrap());
+
+        assert_eq!(
+            sync.poll(forced_at + Duration::from_millis(400), 1, true, 42),
+            None,
+            "cooldown suppresses repeated forced writes"
+        );
+        assert_eq!(
+            sync.poll(forced_at + Duration::from_millis(1001), 1, true, 42),
+            Some(MotionCommand::Enable { force: true })
+        );
+    }
+
+    #[test]
+    fn motion_sync_renogotiates_on_device_generation_change() {
+        let start = Instant::now();
+        let mut sync = MotionSync::new();
+        let enable = sync
+            .poll(start, 1, true, 100)
+            .expect("first generation enable");
+        sync.confirm(start, enable);
+        assert_eq!(
+            sync.poll(start + Duration::from_millis(50), 1, true, 101),
+            None
+        );
+
+        let renegotiate = sync.poll(start + Duration::from_millis(60), 2, true, 5);
+        assert_eq!(renegotiate, Some(MotionCommand::Enable { force: false }));
+        assert_eq!(sync.generation(), Some(2));
+    }
+
+    #[test]
+    fn save_without_device_preserves_client_family() {
+        let saved = prepare_profile_for_save(profile(ControllerKind::SteamController), None)
+            .expect("save allowed");
+        assert_eq!(saved.device, ControllerKind::SteamController);
+    }
+
+    #[test]
+    fn save_rejects_explicit_family_mismatch() {
+        let error = match prepare_profile_for_save(
+            profile(ControllerKind::SteamController),
+            Some(ControllerKind::DualSense),
+        ) {
+            Ok(_) => panic!("mismatch must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Steam Controller"));
+    }
+
+    #[test]
+    fn save_accepts_matching_family() {
+        let saved = prepare_profile_for_save(
+            profile(ControllerKind::SteamController),
+            Some(ControllerKind::SteamController),
+        )
+        .expect("matching save allowed");
+        assert_eq!(saved.device, ControllerKind::SteamController);
+
+        let saved = prepare_profile_for_save(
+            profile(ControllerKind::DualSenseEdge),
+            Some(ControllerKind::DualSense),
+        )
+        .expect("same family save allowed");
+        assert_eq!(saved.device, ControllerKind::DualSenseEdge);
+    }
+
+    fn steam_slot(slot: i32) -> controller::SteamLiveSlot {
+        controller::SteamLiveSlot {
+            vendor_id: crate::steam_controller::STEAM_VID,
+            product_id: crate::steam_controller::STEAM_PID_PUCK,
+            interface_number: slot,
+            path: format!("/dev/hidraw1{slot}"),
+            serial: Some("FXB9961001F79".to_string()),
+            identity: "FXB9961001F79".to_string(),
+            transport: format!("Wireless puck slot {slot}"),
+        }
+    }
+
+    fn probe(slot: Option<i32>) -> controller::SteamProbeResult {
+        controller::SteamProbeResult {
+            receiver_present: true,
+            state: slot.map_or(controller::SteamSlotState::Unknown, |slot| {
+                controller::SteamSlotState::Live(steam_slot(slot))
+            }),
+        }
+    }
+
+    #[test]
+    fn steam_probe_cache_tracks_live_and_receiver_presence() {
+        let mut cache = controller::SteamLiveness::default();
+        apply_steam_probe(&mut cache, &probe(Some(3)));
+        assert!(cache.receiver_present);
+        assert_eq!(cache.live.as_ref().map(|s| s.interface_number), Some(3));
+
+        apply_steam_probe(
+            &mut cache,
+            &controller::SteamProbeResult {
+                receiver_present: false,
+                state: controller::SteamSlotState::Unknown,
+            },
+        );
+        assert!(!cache.receiver_present);
+        assert!(cache.live.is_none());
+    }
+
+    #[test]
+    fn steam_probe_unknown_keeps_cached_live_while_receiver_is_present() {
+        let mut cache = controller::SteamLiveness::default();
+        apply_steam_probe(&mut cache, &probe(Some(4)));
+
+        apply_steam_probe(&mut cache, &probe(None));
+        assert!(cache.receiver_present);
+        assert_eq!(cache.live.as_ref().map(|s| s.interface_number), Some(4));
+
+        apply_steam_probe(
+            &mut cache,
+            &controller::SteamProbeResult {
+                receiver_present: true,
+                state: controller::SteamSlotState::NotLive,
+            },
+        );
+        assert!(cache.live.is_none());
     }
 }

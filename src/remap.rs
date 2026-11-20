@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -107,10 +107,19 @@ pub enum PressType {
     DoubleTap,
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
+pub enum SlotPolicy {
+    #[default]
+    Combine,
+    FirstMatch,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct PressTiming {
     pub long_press_ms: u32,
     pub double_tap_ms: u32,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub slot_policy: HashMap<Button, SlotPolicy>,
 }
 
 impl Default for PressTiming {
@@ -118,8 +127,37 @@ impl Default for PressTiming {
         Self {
             long_press_ms: 400,
             double_tap_ms: 300,
+            slot_policy: HashMap::new(),
         }
     }
+}
+
+impl PressTiming {
+    pub fn policy(&self, button: Button) -> SlotPolicy {
+        self.slot_policy.get(&button).copied().unwrap_or_default()
+    }
+
+    pub fn set_policy(&mut self, button: Button, policy: SlotPolicy) {
+        match policy {
+            SlotPolicy::Combine => {
+                self.slot_policy.remove(&button);
+            }
+            SlotPolicy::FirstMatch => {
+                self.slot_policy.insert(button, policy);
+            }
+        }
+    }
+}
+
+/// Press-type groups in first-appearance order; slots of one type always fire together.
+pub fn press_group_order(slots: &[BindingSlot]) -> Vec<PressType> {
+    let mut groups = Vec::new();
+    for slot in slots {
+        if !groups.contains(&slot.press) {
+            groups.push(slot.press);
+        }
+    }
+    groups
 }
 
 #[derive(Clone, Serialize, PartialEq, Eq, Debug)]
@@ -299,11 +337,243 @@ struct PressState {
     double_fired: bool,
 }
 
+const FIRST_MATCH_PULSE: Duration = Duration::from_millis(12);
+
+/// One physical press under `FirstMatch`, with its bindings latched at press start.
+struct FirstMatchGesture {
+    button: Button,
+    latched: Option<Vec<BindingSlot>>,
+    groups: Vec<PressType>,
+    pressed_at: Instant,
+    double_until: Instant,
+    down: bool,
+    first_release: Option<Instant>,
+    long_reached: bool,
+    second_press_at: Option<Instant>,
+    winner: Option<PressType>,
+    one_shot_fired: bool,
+    pulse_until: Option<Instant>,
+}
+
+enum FirstMatchPick {
+    Winner(PressType),
+    Deferred,
+    None,
+}
+
+impl FirstMatchGesture {
+    fn new(
+        button: Button,
+        latched: Option<Vec<BindingSlot>>,
+        pressed_at: Instant,
+        timing: &PressTiming,
+    ) -> Self {
+        let groups = latched
+            .as_deref()
+            .map(press_group_order)
+            .unwrap_or_default();
+        let double_window = Duration::from_millis(timing.double_tap_ms as u64);
+        let double_until = if groups.contains(&PressType::DoubleTap) {
+            pressed_at + double_window
+        } else {
+            pressed_at
+        };
+        Self {
+            button,
+            latched,
+            groups,
+            pressed_at,
+            double_until,
+            down: true,
+            first_release: None,
+            long_reached: false,
+            second_press_at: None,
+            winner: None,
+            one_shot_fired: false,
+            pulse_until: None,
+        }
+    }
+
+    fn can_accept_second_press(&self, now: Instant) -> bool {
+        self.winner.is_none()
+            && self.groups.contains(&PressType::DoubleTap)
+            && self.second_press_at.is_none()
+            && now <= self.double_until
+    }
+
+    fn analog_identity_allowed(&self, trigger: Button) -> bool {
+        match self.latched.as_deref() {
+            None => true,
+            Some(list) => {
+                self.down
+                    && self.winner.is_some_and(|winner| {
+                        list.iter().any(|slot| {
+                            slot.press == winner && slot.binding == Binding::Gamepad(trigger)
+                        })
+                    })
+            }
+        }
+    }
+
+    fn group_held(&self, group: PressType, down: bool) -> bool {
+        match group {
+            PressType::Regular => down,
+            PressType::LongPress => down && self.long_reached,
+            PressType::DoubleTap => down && self.second_press_at.is_some(),
+        }
+    }
+
+    fn pick_winner(&self, now: Instant) -> FirstMatchPick {
+        for group in &self.groups {
+            let eligible = match group {
+                PressType::Regular => true,
+                PressType::LongPress => self.long_reached,
+                PressType::DoubleTap => self.second_press_at.is_some(),
+            };
+            if eligible {
+                return FirstMatchPick::Winner(*group);
+            }
+            let possible = match group {
+                PressType::Regular => false,
+                PressType::LongPress => {
+                    self.down && self.first_release.is_none() && !self.long_reached
+                }
+                PressType::DoubleTap => self.second_press_at.is_none() && now <= self.double_until,
+            };
+            if possible {
+                return FirstMatchPick::Deferred;
+            }
+        }
+        FirstMatchPick::None
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drive(
+        &mut self,
+        down: bool,
+        now: Instant,
+        timing: &PressTiming,
+        out_buttons: &mut u32,
+        out_extra: &mut u32,
+        dirs: &mut [bool; 4],
+        out: &mut AuxOutput,
+    ) -> bool {
+        if down && !self.down {
+            self.down = true;
+            if self.can_accept_second_press(now) {
+                self.second_press_at = Some(now);
+            }
+        } else if !down && self.down {
+            self.down = false;
+            self.first_release.get_or_insert(now);
+            if self.groups.contains(&PressType::DoubleTap)
+                && self.second_press_at.is_none()
+                && now <= self.double_until
+            {
+                self.double_until = now + Duration::from_millis(timing.double_tap_ms as u64);
+            }
+        }
+
+        if down && !self.long_reached && self.first_release.is_none() {
+            let threshold = Duration::from_millis(timing.long_press_ms as u64);
+            if now.saturating_duration_since(self.pressed_at) >= threshold {
+                self.long_reached = true;
+            }
+        }
+
+        match self.latched.as_deref() {
+            None => {
+                if down {
+                    encode_button(&self.button, out_buttons, out_extra, dirs);
+                }
+                return !down;
+            }
+            Some([]) => return !down,
+            Some(_) => {}
+        }
+
+        if self.winner.is_none() {
+            match self.pick_winner(now) {
+                FirstMatchPick::Winner(group) => {
+                    self.winner = Some(group);
+                    self.one_shot_fired = false;
+                    if !self.group_held(group, down) {
+                        self.pulse_until = Some(now + FIRST_MATCH_PULSE);
+                    }
+                }
+                FirstMatchPick::Deferred => return false,
+                FirstMatchPick::None => return !down,
+            }
+        }
+
+        let winner = self.winner.expect("winner selected above");
+        let active = match self.pulse_until {
+            Some(until) => now < until,
+            None => self.group_held(winner, down),
+        };
+        if active {
+            let slots = self.latched.as_deref().unwrap_or(&[]);
+            emit_first_match_group(
+                slots,
+                winner,
+                &mut self.one_shot_fired,
+                out_buttons,
+                out_extra,
+                dirs,
+                out,
+            );
+            false
+        } else {
+            !down
+        }
+    }
+}
+
+fn emit_first_match_group(
+    slots: &[BindingSlot],
+    press: PressType,
+    one_shot_fired: &mut bool,
+    out_buttons: &mut u32,
+    out_extra: &mut u32,
+    dirs: &mut [bool; 4],
+    out: &mut AuxOutput,
+) {
+    for slot in slots.iter().filter(|slot| slot.press == press) {
+        match &slot.binding {
+            Binding::Gamepad(target) => {
+                encode_button(target, out_buttons, out_extra, dirs);
+            }
+            Binding::Key(key) => {
+                if let Some(code) = key.evdev() {
+                    out.keys.insert(code);
+                }
+            }
+            Binding::Mouse(button) => {
+                out.mouse_buttons.insert(button.evdev());
+            }
+            Binding::Wheel(dir) => {
+                if !*one_shot_fired {
+                    let (h, v) = dir.delta();
+                    out.wheel.0 += h;
+                    out.wheel.1 += v;
+                }
+            }
+            Binding::Profile(action) => {
+                if !*one_shot_fired {
+                    out.profile = Some(action.clone());
+                }
+            }
+        }
+    }
+    *one_shot_fired = true;
+}
+
 pub struct RemapEngine {
     // Needed for edge-triggered wheel output.
     prev_controls: HashSet<Button>,
     stick_active: [bool; 8],
     press_state: HashMap<Button, PressState>,
+    first_match: HashMap<Button, FirstMatchGesture>,
 }
 
 impl RemapEngine {
@@ -312,6 +582,7 @@ impl RemapEngine {
             prev_controls: HashSet::new(),
             stick_active: [false; 8],
             press_state: HashMap::new(),
+            first_match: HashMap::new(),
         }
     }
 
@@ -319,6 +590,12 @@ impl RemapEngine {
         self.prev_controls.clear();
         self.stick_active = [false; 8];
         self.press_state.clear();
+        self.first_match.clear();
+    }
+
+    /// Drop in-flight First Match gestures without disturbing Combine press state.
+    pub fn reset_pending(&mut self) {
+        self.first_match.clear();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -392,17 +669,80 @@ impl RemapEngine {
         }
 
         let mut out_buttons: u32 = 0;
+        let mut out_extra: u32 = 0;
         let mut dirs = [false; 4];
+        let down_set: HashSet<Button> = pressed.iter().copied().collect();
 
-        for btn in &pressed {
-            match resolve_binding(bindings, layers, s, *btn, touchpad_allowed) {
-                None => encode_button(btn, &mut out_buttons, &mut dirs),
+        for btn in ALL_BUTTONS {
+            let is_down = down_set.contains(&btn);
+            let rising = is_down && !self.prev_controls.contains(&btn);
+
+            if rising
+                && let Some(gesture) = self.first_match.get(&btn)
+                && !gesture.can_accept_second_press(now)
+            {
+                self.first_match.remove(&btn);
+            }
+
+            if self.first_match.contains_key(&btn) {
+                let finished = {
+                    let gesture = self
+                        .first_match
+                        .get_mut(&btn)
+                        .expect("First Match gesture present");
+                    gesture.drive(
+                        is_down,
+                        now,
+                        timing,
+                        &mut out_buttons,
+                        &mut out_extra,
+                        &mut dirs,
+                        out,
+                    )
+                };
+                if finished {
+                    self.first_match.remove(&btn);
+                }
+                continue;
+            }
+
+            if !is_down {
+                continue;
+            }
+
+            let resolved = resolve_binding(bindings, layers, s, btn, touchpad_allowed);
+            if btn == Button::Touchpad && !touchpad_allowed && resolved.is_some() {
+                continue;
+            }
+
+            if timing.policy(btn) == SlotPolicy::FirstMatch {
+                let started_at = self
+                    .press_state
+                    .get(&btn)
+                    .and_then(|st| st.pressed_at)
+                    .unwrap_or(now);
+                let mut gesture =
+                    FirstMatchGesture::new(btn, resolved.cloned(), started_at, timing);
+                let finished = gesture.drive(
+                    true,
+                    now,
+                    timing,
+                    &mut out_buttons,
+                    &mut out_extra,
+                    &mut dirs,
+                    out,
+                );
+                if !finished {
+                    self.first_match.insert(btn, gesture);
+                }
+                continue;
+            }
+
+            match resolved {
+                None => encode_button(&btn, &mut out_buttons, &mut out_extra, &mut dirs),
                 Some(list) => {
-                    if *btn == Button::Touchpad && !touchpad_allowed {
-                        continue;
-                    }
-                    let prev = self.prev_controls.contains(btn);
-                    let st = self.press_state.get(btn);
+                    let prev = self.prev_controls.contains(&btn);
+                    let st = self.press_state.get(&btn);
                     let mut long_fired = false;
                     let mut double_fired = false;
                     for slot in list {
@@ -420,7 +760,12 @@ impl RemapEngine {
                         match &slot.binding {
                             Binding::Gamepad(target) => {
                                 if active {
-                                    encode_button(target, &mut out_buttons, &mut dirs);
+                                    encode_button(
+                                        target,
+                                        &mut out_buttons,
+                                        &mut out_extra,
+                                        &mut dirs,
+                                    );
                                 }
                             }
                             Binding::Key(key) => {
@@ -458,7 +803,7 @@ impl RemapEngine {
                             }
                         }
                     }
-                    if let Some(st) = self.press_state.get_mut(btn) {
+                    if let Some(st) = self.press_state.get_mut(&btn) {
                         if long_fired {
                             st.long_fired = true;
                         }
@@ -470,18 +815,22 @@ impl RemapEngine {
             }
         }
 
-        if let Some(list) = resolve_binding(bindings, layers, s, Button::L2, touchpad_allowed)
-            && !list
-                .iter()
-                .any(|slot| slot.binding == Binding::Gamepad(Button::L2))
-        {
+        let analog_allowed = |button: Button| {
+            if let Some(gesture) = self.first_match.get(&button) {
+                return gesture.analog_identity_allowed(button);
+            }
+            !resolve_binding(bindings, layers, s, button, touchpad_allowed).is_some_and(|list| {
+                !list
+                    .iter()
+                    .any(|slot| slot.binding == Binding::Gamepad(button))
+            })
+        };
+        let l2_allowed = analog_allowed(Button::L2);
+        let r2_allowed = analog_allowed(Button::R2);
+        if !l2_allowed {
             s.l2 = 0;
         }
-        if let Some(list) = resolve_binding(bindings, layers, s, Button::R2, touchpad_allowed)
-            && !list
-                .iter()
-                .any(|slot| slot.binding == Binding::Gamepad(Button::R2))
-        {
+        if !r2_allowed {
             s.r2 = 0;
         }
 
@@ -502,6 +851,7 @@ impl RemapEngine {
         }
 
         s.buttons = out_buttons;
+        s.extra_buttons = out_extra;
         s.dpad = dirs_to_dpad(dirs);
 
         self.prev_controls.clear();
@@ -529,7 +879,7 @@ fn dirs_to_dpad(d: [bool; 4]) -> u8 {
     }
 }
 
-fn encode_button(btn: &Button, out: &mut u32, dirs: &mut [bool; 4]) {
+fn encode_button(btn: &Button, out: &mut u32, extra: &mut u32, dirs: &mut [bool; 4]) {
     match btn {
         Button::DPadUp => dirs[0] = true,
         Button::DPadRight => dirs[1] = true,
@@ -538,6 +888,9 @@ fn encode_button(btn: &Button, out: &mut u32, dirs: &mut [bool; 4]) {
         _ => {
             if let Some(mask) = btn.to_bitmask() {
                 *out |= mask;
+            }
+            if let Some(mask) = btn.to_extra_mask() {
+                *extra |= mask;
             }
         }
     }
@@ -551,19 +904,9 @@ mod tests {
 
     fn state(buttons: u32, dpad: u8) -> ControllerState {
         ControllerState {
-            left_x: 128,
-            left_y: 128,
-            right_x: 128,
-            right_y: 128,
-            l2: 0,
-            r2: 0,
             buttons,
             dpad,
-            gyro: [0; 3],
-            accel: [0; 3],
-            sensor_timestamp: 0,
-            touch_count: 0,
-            touch_points: [TouchPoint::default(); 2],
+            ..ControllerState::default()
         }
     }
 
@@ -750,6 +1093,29 @@ mod tests {
     }
 
     #[test]
+    fn steam_extra_buttons_pass_through_and_remap() {
+        let mut s = state(0, DPAD_NEUTRAL);
+        s.extra_buttons = crate::inputs::EXTRA_BTN_L4 | crate::inputs::EXTRA_BTN_QAM;
+        apply(&mut s, HashMap::new(), true);
+        assert_eq!(
+            s.extra_buttons,
+            crate::inputs::EXTRA_BTN_L4 | crate::inputs::EXTRA_BTN_QAM
+        );
+        assert_eq!(s.buttons, 0);
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        s.extra_buttons = crate::inputs::EXTRA_BTN_L4;
+        apply(&mut s, one(Button::L4, Button::R5), true);
+        assert_eq!(s.extra_buttons, crate::inputs::EXTRA_BTN_R5);
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        s.extra_buttons = crate::inputs::EXTRA_BTN_RIGHT_GRIP;
+        apply(&mut s, one(Button::RightGrip, Button::Cross), true);
+        assert_eq!(s.buttons, BTN_CROSS);
+        assert_eq!(s.extra_buttons, 0);
+    }
+
+    #[test]
     fn touchpad_binding_respects_gate() {
         let bindings = one(Button::Touchpad, Button::Cross);
 
@@ -838,6 +1204,25 @@ mod tests {
         );
         assert_eq!(s.buttons, 0);
         assert_eq!(aux.keys, HashSet::from([45]));
+    }
+
+    #[test]
+    fn steam_menu_and_view_bindings_do_not_cross_fire() {
+        let bindings = HashMap::from([
+            (Button::Options, vec![slot(key("Esc"))]),
+            (Button::Create, vec![slot(key("Tab"))]),
+        ]);
+
+        let mut menu = state(BTN_OPTIONS, DPAD_NEUTRAL);
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+        apply_engine(&mut engine, &mut menu, &bindings, true, &mut aux);
+        assert_eq!(aux.keys, HashSet::from([1]), "Options/Menu emits KEY_ESC");
+
+        let mut view = state(BTN_CREATE, DPAD_NEUTRAL);
+        engine.reset();
+        apply_engine(&mut engine, &mut view, &bindings, true, &mut aux);
+        assert_eq!(aux.keys, HashSet::from([15]), "Create/View emits KEY_TAB");
     }
 
     #[test]
@@ -2260,6 +2645,7 @@ mod tests {
         let timing = PressTiming {
             long_press_ms: 100,
             double_tap_ms: 50,
+            slot_policy: HashMap::new(),
         };
         let start = Instant::now();
         let mut engine = RemapEngine::new();
@@ -2342,5 +2728,860 @@ mod tests {
             layer.bindings.get(&Button::Cross),
             Some(&vec![slot(Binding::Gamepad(Button::Circle))])
         );
+    }
+
+    fn first_match_timing(button: Button) -> PressTiming {
+        let mut timing = PressTiming::default();
+        timing.set_policy(button, SlotPolicy::FirstMatch);
+        timing
+    }
+
+    #[test]
+    fn press_policy_defaults_to_combine_and_serde_is_backward_compatible() {
+        let timing: PressTiming =
+            serde_json::from_str(r#"{"long_press_ms":400,"double_tap_ms":300}"#)
+                .expect("legacy timing parses");
+        assert_eq!(timing.policy(Button::Cross), SlotPolicy::Combine);
+        assert!(timing.slot_policy.is_empty());
+    }
+
+    #[test]
+    fn press_policy_and_slot_order_round_trip() {
+        let bindings = vec![
+            slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+            slot_press(Binding::Gamepad(Button::Square), PressType::Regular),
+            slot_press(Binding::Gamepad(Button::Triangle), PressType::LongPress),
+        ];
+        let mut timing = first_match_timing(Button::Cross);
+        timing.long_press_ms = 500;
+
+        let json = serde_json::to_string(&(bindings.clone(), timing.clone())).expect("serialize");
+        let (back_bindings, back_timing): (Vec<BindingSlot>, PressTiming) =
+            serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back_bindings, bindings);
+        assert_eq!(back_timing.policy(Button::Cross), SlotPolicy::FirstMatch);
+        assert_eq!(back_timing.long_press_ms, 500);
+    }
+
+    #[test]
+    fn first_match_regular_first_blocks_later_hold() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot(Binding::Gamepad(Button::Circle)),
+                slot_press(Binding::Gamepad(Button::Square), PressType::LongPress),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE);
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE, "the later Hold group is unreachable");
+    }
+
+    #[test]
+    fn first_match_hold_first_quick_tap_pulses_regular_on_release() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+                slot(Binding::Gamepad(Button::Square)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0, "nothing fires while Hold is still possible");
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(50),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_SQUARE, "quick release falls back to Press");
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(55),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_SQUARE, "pulse covers the next poll");
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(70),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0, "pulse ends without a stuck button");
+    }
+
+    #[test]
+    fn first_match_hold_first_threshold_emits_only_hold() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+                slot(Binding::Gamepad(Button::Square)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for millis in [0_u64, 399] {
+            let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &bindings,
+                &[],
+                &timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+            assert_eq!(s.buttons, 0, "no early Press while Hold can still fire");
+        }
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE, "only the Hold group wins");
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(420),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+    }
+
+    #[test]
+    fn first_match_groups_keep_all_same_type_slots_and_first_occurrence_order() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+                slot(Binding::Gamepad(Button::Square)),
+                slot_press(Binding::Gamepad(Button::Triangle), PressType::LongPress),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE | BTN_TRIANGLE);
+        assert_eq!(s.buttons & BTN_SQUARE, 0, "lower Press group is suppressed");
+    }
+
+    #[test]
+    fn first_match_double_first_single_tap_falls_back_after_window() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::DoubleTap),
+                slot(Binding::Gamepad(Button::Square)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(50),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0, "double-tap window is still open");
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(349),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(351),
+            true,
+            &mut aux,
+        );
+        assert_eq!(
+            s.buttons, BTN_SQUARE,
+            "single tap resolves after the window"
+        );
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(370),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+    }
+
+    #[test]
+    fn first_match_double_first_second_press_wins() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::DoubleTap),
+                slot(Binding::Gamepad(Button::Square)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for (millis, buttons) in [(0_u64, BTN_CROSS), (50, 0), (200, BTN_CROSS)] {
+            let mut s = state(buttons, DPAD_NEUTRAL);
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &bindings,
+                &[],
+                &timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+            if millis == 200 {
+                assert_eq!(s.buttons, BTN_CIRCLE);
+            } else {
+                assert_eq!(s.buttons, 0);
+            }
+        }
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(250),
+            true,
+            &mut aux,
+        );
+        assert_eq!(
+            s.buttons, BTN_CIRCLE,
+            "Double stays held on the second press"
+        );
+    }
+
+    #[test]
+    fn first_match_double_first_hold_falls_back_to_long_after_window() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::DoubleTap),
+                slot_press(Binding::Gamepad(Button::Square), PressType::LongPress),
+                slot(Binding::Gamepad(Button::Triangle)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for millis in [0_u64, 301, 399] {
+            let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &bindings,
+                &[],
+                &timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+            assert_eq!(s.buttons, 0, "Double/Long defer lower and later groups");
+        }
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_SQUARE, "Long is eligible at the threshold");
+    }
+
+    #[test]
+    fn first_match_long_before_double_quick_double_fires_double() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+                slot_press(Binding::Gamepad(Button::Square), PressType::DoubleTap),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for (millis, buttons) in [(0_u64, BTN_CROSS), (50, 0), (200, BTN_CROSS)] {
+            let mut s = state(buttons, DPAD_NEUTRAL);
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &bindings,
+                &[],
+                &timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+            if millis == 200 {
+                assert_eq!(s.buttons, BTN_SQUARE, "Double wins once Long is impossible");
+            } else {
+                assert_eq!(s.buttons, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn first_match_long_before_double_ignores_long_threshold_after_release() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+                slot_press(Binding::Gamepad(Button::Square), PressType::DoubleTap),
+            ],
+        )]);
+        let mut timing = first_match_timing(Button::Cross);
+        timing.long_press_ms = 100;
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for (millis, buttons) in [(0_u64, BTN_CROSS), (50, 0), (200, BTN_CROSS)] {
+            let mut s = state(buttons, DPAD_NEUTRAL);
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &bindings,
+                &[],
+                &timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+            if millis == 200 {
+                assert_eq!(
+                    s.buttons, BTN_SQUARE,
+                    "Long cannot activate during the second press"
+                );
+            } else {
+                assert_eq!(s.buttons, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn first_match_regular_before_double_makes_double_unreachable() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot(Binding::Gamepad(Button::Circle)),
+                slot_press(Binding::Gamepad(Button::Square), PressType::DoubleTap),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE);
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(50),
+            true,
+            &mut aux,
+        );
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(200),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE, "Regular always wins first");
+    }
+
+    #[test]
+    fn first_match_wheel_and_profile_fire_once_per_gesture() {
+        let wheel_bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Wheel(WheelDir::Up), PressType::DoubleTap),
+                slot(key("X")),
+            ],
+        )]);
+        let wheel_timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for (millis, buttons) in [(0_u64, BTN_CROSS), (50, 0), (200, BTN_CROSS)] {
+            let mut s = state(buttons, DPAD_NEUTRAL);
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &wheel_bindings,
+                &[],
+                &wheel_timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+        }
+        assert_eq!(aux.wheel, (0, 1), "Double wheel fires once");
+        assert!(aux.keys.is_empty());
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &wheel_bindings,
+            &[],
+            &wheel_timing,
+            start + Duration::from_millis(250),
+            true,
+            &mut aux,
+        );
+        assert_eq!(aux.wheel, (0, 0), "wheel does not repeat while held");
+
+        let profile_bindings = HashMap::from([(
+            Button::Circle,
+            vec![
+                slot_press(Binding::Profile(ProfileAction::Cycle), PressType::LongPress),
+                slot(key("X")),
+            ],
+        )]);
+        let profile_timing = first_match_timing(Button::Circle);
+        let mut engine = RemapEngine::new();
+
+        let mut s = state(BTN_CIRCLE, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &profile_bindings,
+            &[],
+            &profile_timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(aux.profile, None);
+
+        let mut s = state(BTN_CIRCLE, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &profile_bindings,
+            &[],
+            &profile_timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(aux.profile, Some(ProfileAction::Cycle));
+
+        let mut s = state(BTN_CIRCLE, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &profile_bindings,
+            &[],
+            &profile_timing,
+            start + Duration::from_millis(450),
+            true,
+            &mut aux,
+        );
+        assert_eq!(aux.profile, None, "profile action does not repeat");
+    }
+
+    #[test]
+    fn first_match_latches_layer_bindings_at_press_start() {
+        let base = HashMap::from([(Button::Cross, vec![slot(Binding::Gamepad(Button::Circle))])]);
+        let layers = [layer(
+            Button::L1,
+            HashMap::from([(Button::Cross, vec![slot(Binding::Gamepad(Button::Square))])]),
+        )];
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &base,
+            &layers,
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE);
+
+        let mut s = state(BTN_CROSS | BTN_L1, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &base,
+            &layers,
+            &timing,
+            start + Duration::from_millis(10),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE | BTN_L1, "old latched binding wins");
+
+        let mut s = state(BTN_L1, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &base,
+            &layers,
+            &timing,
+            start + Duration::from_millis(20),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_L1);
+
+        let mut s = state(BTN_CROSS | BTN_L1, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &base,
+            &layers,
+            &timing,
+            start + Duration::from_millis(30),
+            true,
+            &mut aux,
+        );
+        assert_eq!(
+            s.buttons,
+            BTN_SQUARE | BTN_L1,
+            "the next press latches the active layer"
+        );
+    }
+
+    #[test]
+    fn first_match_reset_pending_does_not_leave_outputs_stuck() {
+        let bindings = HashMap::from([(
+            Button::Cross,
+            vec![
+                slot_press(Binding::Gamepad(Button::Circle), PressType::LongPress),
+                slot(Binding::Gamepad(Button::Square)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::Cross);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, BTN_CIRCLE);
+        assert!(!engine.first_match.is_empty());
+
+        let mut s = state(BTN_CROSS, DPAD_NEUTRAL);
+        engine.reset_pending();
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(410),
+            true,
+            &mut aux,
+        );
+        assert_eq!(
+            s.buttons, BTN_CIRCLE,
+            "the new gesture re-latches the held button"
+        );
+
+        let mut s = state(0, DPAD_NEUTRAL);
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(420),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.buttons, 0);
+        assert!(engine.first_match.is_empty());
+    }
+
+    #[test]
+    fn first_match_l2_analog_only_passes_for_winning_identity_group() {
+        let bindings = HashMap::from([(
+            Button::L2,
+            vec![
+                slot_press(Binding::Gamepad(Button::L2), PressType::LongPress),
+                slot(Binding::Gamepad(Button::Cross)),
+            ],
+        )]);
+        let timing = first_match_timing(Button::L2);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        let mut s = state(BTN_L2, DPAD_NEUTRAL);
+        s.l2 = 200;
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start,
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.l2, 0, "analog is suppressed while Hold is deferred");
+        assert_eq!(s.buttons, 0);
+
+        let mut s = state(BTN_L2, DPAD_NEUTRAL);
+        s.l2 = 200;
+        apply_engine_layers_at(
+            &mut engine,
+            &mut s,
+            &bindings,
+            &[],
+            &timing,
+            start + Duration::from_millis(401),
+            true,
+            &mut aux,
+        );
+        assert_eq!(s.l2, 200, "winning Long group carries the identity trigger");
+        assert_eq!(s.buttons, BTN_L2);
+    }
+
+    #[test]
+    fn first_match_l2_analog_ignores_identity_in_losing_group() {
+        let bindings = HashMap::from([(
+            Button::L2,
+            vec![
+                slot(Binding::Gamepad(Button::Cross)),
+                slot_press(Binding::Gamepad(Button::L2), PressType::LongPress),
+            ],
+        )]);
+        let timing = first_match_timing(Button::L2);
+        let start = Instant::now();
+        let mut engine = RemapEngine::new();
+        let mut aux = AuxOutput::default();
+
+        for millis in [0_u64, 401] {
+            let mut s = state(BTN_L2, DPAD_NEUTRAL);
+            s.l2 = 200;
+            apply_engine_layers_at(
+                &mut engine,
+                &mut s,
+                &bindings,
+                &[],
+                &timing,
+                start + Duration::from_millis(millis),
+                true,
+                &mut aux,
+            );
+            assert_eq!(s.buttons, BTN_CROSS);
+            assert_eq!(s.l2, 0, "the losing identity slot must not enable analog");
+        }
     }
 }

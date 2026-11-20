@@ -10,8 +10,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use crc::{CRC_32_ISO_HDLC, Crc};
 use hidapi::{HidApi, HidDevice};
-use serde::{Deserialize, Serialize};
 
+pub use crate::common::BatteryInfo;
 use crate::{common::*, inputs::*};
 
 const OUTPUT_CRC32_SEED: u8 = 0xa2;
@@ -108,12 +108,6 @@ pub struct PolledInput {
     pub status_byte: u8,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct BatteryInfo {
-    pub capacity: u8,
-    pub status: String,
-}
-
 pub struct DualSense {
     device: HidDevice,
     is_bt: bool,
@@ -177,10 +171,6 @@ Please connect your controller via USB or Bluetooth."
             serial,
             update_mode: Arc::new(AtomicBool::new(false)),
         })
-    }
-
-    pub fn update_mode_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.update_mode)
     }
 
     pub fn set_update_mode(&self, active: bool) {
@@ -397,6 +387,10 @@ Please connect your controller via USB or Bluetooth."
             sensor_timestamp,
             touch_count,
             touch_points,
+            gyro_counts_per_dps: DS_GYRO_COUNTS_PER_DPS,
+            accel_counts_per_g: DS_ACCEL_COUNTS_PER_G,
+            timestamp_unit_us: DS_TIMESTAMP_UNIT_US,
+            ..ControllerState::default()
         })
     }
 
@@ -990,22 +984,4 @@ Please connect your controller via USB or Bluetooth."
 
         self.send_firmware_feature(&buf)
     }
-}
-
-pub fn list_devices(api: &HidApi) -> Vec<String> {
-    api.device_list()
-        .filter(|info| {
-            info.vendor_id() == DS_VID
-                && (info.product_id() == DS_PID || info.product_id() == DSE_PID)
-        })
-        .map(|info| {
-            let connection = if info.interface_number() == -1 {
-                "Bluetooth"
-            } else {
-                "USB"
-            };
-            let serial = info.serial_number().unwrap_or("Unknown");
-            format!("{} ({})", serial, connection)
-        })
-        .collect()
 }

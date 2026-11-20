@@ -13,6 +13,10 @@ const SVG_VIEWPORT: f32 = 128.0;
 
 impl DS4UApp {
     pub(crate) fn render_inputs_section(&self, ui: &mut Ui) {
+        if self.is_steam() {
+            self.render_steam_inputs_section(ui);
+            return;
+        }
         let c = &self.theme.colors;
         ui.add_space(20.0);
         ui.vertical_centered(|ui| {

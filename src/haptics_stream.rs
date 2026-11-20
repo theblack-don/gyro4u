@@ -4,9 +4,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::common::HapticPattern;
-use crate::dualsense::{
-    DualSense, HAPTICS_PACKET_FRAMES, HAPTICS_PACKET_SAMPLES, HAPTICS_SAMPLE_RATE,
-};
+use crate::controller::PhysicalController;
+use crate::dualsense::{HAPTICS_PACKET_FRAMES, HAPTICS_PACKET_SAMPLES, HAPTICS_SAMPLE_RATE};
 use crate::util::mlock;
 
 pub const HAPTIC_CARRIER_HZ: f32 = 160.0;
@@ -77,7 +76,7 @@ impl HapticStream {
 
     pub fn start(
         &mut self,
-        ctrl: Arc<Mutex<DualSense>>,
+        ctrl: Arc<Mutex<PhysicalController>>,
         pattern: HapticPattern,
         strength: u8,
         speed: f32,

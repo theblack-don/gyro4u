@@ -4,7 +4,7 @@ use egui::{Color32, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::app::DS4UApp;
 use crate::gyro::{GyroAcceleration, GyroActivation, GyroConfig, RAW_COUNTS_PER_DPS};
-use crate::inputs::{Button, ControllerState, GAMEPAD_TARGETS};
+use crate::inputs::{Button, ControllerKind, ControllerState};
 use crate::state::GyroCalibration;
 use crate::theme::ThemeColors;
 use crate::ui::widgets::{
@@ -18,24 +18,51 @@ enum ActivationKind {
     Hold,
     Toggle,
     Touchpad,
+    LeftTrackpad,
+    RightTrackpad,
     Trigger,
 }
 
 impl ActivationKind {
-    const ALL: [Self; 5] = [
+    const DUAL_SENSE: [Self; 5] = [
         Self::Always,
         Self::Touchpad,
         Self::Hold,
         Self::Toggle,
         Self::Trigger,
     ];
+    const STEAM: [Self; 7] = [
+        Self::Always,
+        Self::Touchpad,
+        Self::LeftTrackpad,
+        Self::RightTrackpad,
+        Self::Hold,
+        Self::Toggle,
+        Self::Trigger,
+    ];
 
-    fn label(self) -> &'static str {
+    fn choices(kind: ControllerKind) -> &'static [Self] {
+        if kind.is_steam() {
+            &Self::STEAM
+        } else {
+            &Self::DUAL_SENSE
+        }
+    }
+
+    fn label(self, kind: ControllerKind) -> &'static str {
         match self {
             Self::Always => "Always",
             Self::Hold => "Hold",
             Self::Toggle => "Toggle",
-            Self::Touchpad => "Touchpad",
+            Self::Touchpad => {
+                if kind.is_steam() {
+                    "Either Trackpad"
+                } else {
+                    "Touchpad"
+                }
+            }
+            Self::LeftTrackpad => "Left Trackpad",
+            Self::RightTrackpad => "Right Trackpad",
             Self::Trigger => "Trigger",
         }
     }
@@ -46,6 +73,8 @@ impl ActivationKind {
             GyroActivation::Hold { .. } => Some(Self::Hold),
             GyroActivation::Toggle { .. } => Some(Self::Toggle),
             GyroActivation::Touchpad => Some(Self::Touchpad),
+            GyroActivation::LeftTrackpad => Some(Self::LeftTrackpad),
+            GyroActivation::RightTrackpad => Some(Self::RightTrackpad),
             GyroActivation::Trigger { .. } => Some(Self::Trigger),
             GyroActivation::AnyOf(_) => None,
         }
@@ -76,7 +105,11 @@ fn activation_state(s: &ControllerState, activation: &GyroActivation) -> Option<
         GyroActivation::Always => Some(true),
         GyroActivation::Hold { button } => Some(button.is_pressed(s)),
         GyroActivation::Toggle { .. } => None,
-        GyroActivation::Touchpad => Some(s.touch_count == 1),
+        GyroActivation::Touchpad => {
+            Some(s.touch_count == 1 || s.steam_left_pad.touch || s.steam_right_pad.touch)
+        }
+        GyroActivation::LeftTrackpad => Some(s.steam_left_pad.touch),
+        GyroActivation::RightTrackpad => Some(s.steam_right_pad.touch),
         GyroActivation::Trigger { button, threshold } => Some(match button {
             Button::L2 => s.l2 >= *threshold,
             Button::R2 => s.r2 >= *threshold,
@@ -96,12 +129,20 @@ fn activation_state(s: &ControllerState, activation: &GyroActivation) -> Option<
     }
 }
 
-fn source_hint(source: &GyroActivation) -> String {
+fn source_hint(source: &GyroActivation, kind: ControllerKind) -> String {
     match source {
         GyroActivation::Always => "the controller is connected".to_string(),
         GyroActivation::Hold { button } => format!("{} is held", button.label()),
         GyroActivation::Toggle { button } => format!("{} is toggled on", button.label()),
-        GyroActivation::Touchpad => "a finger rests on the owned touchpad".to_string(),
+        GyroActivation::Touchpad => {
+            if kind.is_steam() {
+                "either Steam trackpad is touched".to_string()
+            } else {
+                "a finger rests on the owned touchpad".to_string()
+            }
+        }
+        GyroActivation::LeftTrackpad => "the left Steam trackpad is touched".to_string(),
+        GyroActivation::RightTrackpad => "the right Steam trackpad is touched".to_string(),
         GyroActivation::Trigger { button, .. } => {
             format!("{} is at or past the threshold", button.label())
         }
@@ -109,18 +150,26 @@ fn source_hint(source: &GyroActivation) -> String {
     }
 }
 
-fn activation_hint(activation: &GyroActivation) -> String {
+fn activation_hint(activation: &GyroActivation, kind: ControllerKind) -> String {
     match activation {
         GyroActivation::Always => {
             "Gyro is always active while the controller is connected.".to_string()
         }
         GyroActivation::Hold { .. } => "Gyro is active while the button is held.".to_string(),
-        GyroActivation::Toggle { .. } => {
-            "Press the button to toggle gyro on or off.".to_string()
-        }
+        GyroActivation::Toggle { .. } => "Press the button to toggle gyro on or off.".to_string(),
         GyroActivation::Touchpad => {
-            "Gyro is active while exactly one finger rests on an owned touchpad; a second finger suspends it."
-                .to_string()
+            if kind.is_steam() {
+                "Gyro is active while either Steam trackpad is touched.".to_string()
+            } else {
+                "Gyro is active while exactly one finger rests on an owned DualSense touchpad."
+                    .to_string()
+            }
+        }
+        GyroActivation::LeftTrackpad => {
+            "Gyro is active while the left Steam trackpad is touched.".to_string()
+        }
+        GyroActivation::RightTrackpad => {
+            "Gyro is active while the right Steam trackpad is touched.".to_string()
         }
         GyroActivation::Trigger {
             button: Button::L2, ..
@@ -134,7 +183,10 @@ fn activation_hint(activation: &GyroActivation) -> String {
             if sources.is_empty() {
                 "No activation sources: gyro stays off. Add a source below.".to_string()
             } else {
-                let parts: Vec<String> = sources.iter().map(source_hint).collect();
+                let parts: Vec<String> = sources
+                    .iter()
+                    .map(|source| source_hint(source, kind))
+                    .collect();
                 format!("Active while {}.", parts.join(" or "))
             }
         }
@@ -142,7 +194,13 @@ fn activation_hint(activation: &GyroActivation) -> String {
 }
 
 impl DS4UApp {
-    fn render_gyro_visual(ui: &mut Ui, dps: [f32; 3], accel: [i16; 3], c: &ThemeColors) {
+    fn render_gyro_visual(
+        ui: &mut Ui,
+        dps: [f32; 3],
+        accel: [i16; 3],
+        accel_counts_per_g: f32,
+        c: &ThemeColors,
+    ) {
         ui.horizontal(|ui| {
             let size = 160.0;
             let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
@@ -167,8 +225,13 @@ impl DS4UApp {
                 Stroke::new(0.5_f32, c.widget_inactive()),
             );
 
-            let ax = (accel[0] as f32 / 8192.0).clamp(-1.0, 1.0);
-            let az = (accel[2] as f32 / 8192.0).clamp(-1.0, 1.0);
+            let scale = if accel_counts_per_g.is_finite() && accel_counts_per_g > 0.0 {
+                accel_counts_per_g
+            } else {
+                crate::inputs::DS_ACCEL_COUNTS_PER_G
+            };
+            let ax = (accel[0] as f32 / scale).clamp(-1.0, 1.0);
+            let az = (accel[2] as f32 / scale).clamp(-1.0, 1.0);
             let dot = pos2(
                 center.x + ax * (radius - 10.0),
                 center.y + az * (radius - 10.0),
@@ -233,12 +296,15 @@ impl DS4UApp {
         c: &ThemeColors,
         index: usize,
         source: &mut GyroActivation,
+        choices: &[Button],
+        kind: ControllerKind,
     ) -> (bool, bool) {
         let mut changed = false;
         let mut remove = false;
 
         ds_row(ui, |ui| {
-            let label = ActivationKind::of(source).map_or("Source", ActivationKind::label);
+            let label =
+                ActivationKind::of(source).map_or("Source", |activation| activation.label(kind));
             ds_label(ui, label);
             match source {
                 GyroActivation::Hold { button } | GyroActivation::Toggle { button } => {
@@ -246,12 +312,12 @@ impl DS4UApp {
                     egui::ComboBox::from_id_salt(("ds4u_gyro_source_button", index))
                         .selected_text(picked.label())
                         .show_ui(ui, |ui| {
-                            for option in GAMEPAD_TARGETS {
+                            for option in choices {
                                 if ui
-                                    .selectable_label(picked == option, option.label())
+                                    .selectable_label(picked == *option, option.device_label(kind))
                                     .clicked()
                                 {
-                                    picked = option;
+                                    picked = *option;
                                 }
                             }
                         });
@@ -291,7 +357,11 @@ impl DS4UApp {
                         changed = true;
                     }
                 }
-                GyroActivation::Always | GyroActivation::Touchpad | GyroActivation::AnyOf(_) => {}
+                GyroActivation::Always
+                | GyroActivation::Touchpad
+                | GyroActivation::LeftTrackpad
+                | GyroActivation::RightTrackpad
+                | GyroActivation::AnyOf(_) => {}
             }
             ui.add_space(8.0);
             if ds_pill_button(ui, c, "Remove", false).clicked() {
@@ -312,9 +382,12 @@ impl DS4UApp {
         let mut sources = Vec::new();
         flatten_sources(&cfg.activation, &mut sources);
 
+        let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
+        let choices = kind.target_buttons();
         let mut remove = None;
         for (index, source) in sources.iter_mut().enumerate() {
-            let (row_changed, row_remove) = Self::render_gyro_source_row(ui, c, index, source);
+            let (row_changed, row_remove) =
+                Self::render_gyro_source_row(ui, c, index, source, choices, kind);
             changed |= row_changed;
             if row_remove {
                 remove = Some(index);
@@ -344,6 +417,9 @@ impl DS4UApp {
         let mut add_kind = ui
             .data_mut(|d| d.get_temp::<ActivationKind>(kind_id))
             .unwrap_or(ActivationKind::Hold);
+        if !ActivationKind::choices(kind).contains(&add_kind) {
+            add_kind = ActivationKind::Hold;
+        }
         let mut add_button = ui
             .data_mut(|d| d.get_temp::<Button>(button_id))
             .unwrap_or(Button::R3);
@@ -358,14 +434,14 @@ impl DS4UApp {
         ds_row(ui, |ui| {
             ds_label(ui, "Add source");
             egui::ComboBox::from_id_salt("ds4u_gyro_add_kind_pick")
-                .selected_text(add_kind.label())
+                .selected_text(add_kind.label(kind))
                 .show_ui(ui, |ui| {
-                    for option in ActivationKind::ALL {
+                    for option in ActivationKind::choices(kind) {
                         if ui
-                            .selectable_label(add_kind == option, option.label())
+                            .selectable_label(add_kind == *option, option.label(kind))
                             .clicked()
                         {
-                            add_kind = option;
+                            add_kind = *option;
                         }
                     }
                 });
@@ -374,12 +450,12 @@ impl DS4UApp {
                 egui::ComboBox::from_id_salt("ds4u_gyro_add_button_pick")
                     .selected_text(add_button.label())
                     .show_ui(ui, |ui| {
-                        for option in GAMEPAD_TARGETS {
+                        for option in choices {
                             if ui
-                                .selectable_label(add_button == option, option.label())
+                                .selectable_label(add_button == *option, option.device_label(kind))
                                 .clicked()
                             {
-                                add_button = option;
+                                add_button = *option;
                             }
                         }
                     });
@@ -425,6 +501,8 @@ impl DS4UApp {
             let source = match add_kind {
                 ActivationKind::Always => GyroActivation::Always,
                 ActivationKind::Touchpad => GyroActivation::Touchpad,
+                ActivationKind::LeftTrackpad => GyroActivation::LeftTrackpad,
+                ActivationKind::RightTrackpad => GyroActivation::RightTrackpad,
                 ActivationKind::Hold => GyroActivation::Hold { button: add_button },
                 ActivationKind::Toggle => GyroActivation::Toggle { button: add_button },
                 ActivationKind::Trigger => GyroActivation::Trigger {
@@ -453,23 +531,42 @@ impl DS4UApp {
         ui.horizontal(|ui| {
             ui.add_space(ROW_PAD_X);
             ui.label(
-                RichText::new(activation_hint(&cfg.activation))
+                RichText::new(activation_hint(&cfg.activation, kind))
                     .size(12.0)
                     .italics()
                     .color(c.text_dim()),
             );
         });
 
-        if contains_kind(&cfg.activation, ActivationKind::Touchpad) && !self.using_daemon() {
+        let trackpad_source = contains_kind(&cfg.activation, ActivationKind::Touchpad)
+            || contains_kind(&cfg.activation, ActivationKind::LeftTrackpad)
+            || contains_kind(&cfg.activation, ActivationKind::RightTrackpad);
+        let warning = if !self.using_daemon() {
+            if kind.is_steam() {
+                if trackpad_source {
+                    Some(
+                        "Steam trackpad touch is read directly. Gyro output requires the \
+                         gyro4u daemon.",
+                    )
+                } else {
+                    Some("Gyro output requires the gyro4u daemon.")
+                }
+            } else if trackpad_source {
+                Some("Touchpad activation requires the gyro4u daemon to own the touchpad.")
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(warning) = warning {
             ui.horizontal(|ui| {
                 ui.add_space(ROW_PAD_X);
                 ui.label(
-                    RichText::new(
-                        "Touchpad activation requires the gyro4u daemon to own the touchpad.",
-                    )
-                    .size(12.0)
-                    .italics()
-                    .color(c.warning()),
+                    RichText::new(warning)
+                        .size(12.0)
+                        .italics()
+                        .color(c.warning()),
                 );
             });
         }
@@ -690,10 +787,16 @@ impl DS4UApp {
                 ds_section(ui, &c, "Live Readout");
                 ui.add_space(8.0);
                 if let Some(s) = state {
-                    let dps = cfg.dps_from_raw(s.gyro);
+                    let dps = cfg.dps_from_state(&s);
                     ui.horizontal(|ui| {
                         ui.add_space(ROW_PAD_X);
-                        Self::render_gyro_visual(ui, dps, s.accel, &c);
+                        Self::render_gyro_visual(
+                            ui,
+                            dps,
+                            s.accel,
+                            s.accel_counts_per_g,
+                            &c,
+                        );
                     });
 
                     let speed = (dps[0] * dps[0] + dps[1] * dps[1]).sqrt();
@@ -761,6 +864,11 @@ impl DS4UApp {
         let mut finish_calibration = false;
         let mut bias = [0.0f32; 3];
         if let Some(cal) = self.gyro.calibration.as_mut() {
+            let scale = self
+                .input
+                .controller_state
+                .map(|s| s.gyro_counts_per_dps)
+                .unwrap_or(RAW_COUNTS_PER_DPS);
             if let Some(s) = self.input.controller_state {
                 cal.samples.push(s.gyro);
             }
@@ -772,7 +880,7 @@ impl DS4UApp {
                     }
                 }
                 for value in &mut bias {
-                    *value = *value / count / RAW_COUNTS_PER_DPS;
+                    *value = *value / count / scale;
                 }
                 finish_calibration = true;
             } else {

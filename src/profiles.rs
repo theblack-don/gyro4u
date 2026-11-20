@@ -9,14 +9,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common::*,
-    gyro::GyroConfig,
-    inputs::Button,
+    gyro::{GyroActivation, GyroConfig},
+    inputs::{Button, ControllerKind},
     remap::{Binding, BindingSlot, Layer, PressTiming, PressType, StickConfig},
     stick_mouse::StickMouseConfig,
+    trackpad_mouse::{SteamPadHapticStrength, SteamPadMouseConfig},
     transform::{GyroProcessor, InputTransform, TriggerDeadband},
 };
 
-pub const CURRENT_PROFILE_SCHEMA: u32 = 3;
+pub const CURRENT_PROFILE_SCHEMA: u32 = 4;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct TriggerConfig {
@@ -149,6 +150,8 @@ fn default_touchpad_sensitivity() -> f32 {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Profile {
     pub name: String,
+    #[serde(default)]
+    pub device: ControllerKind,
     pub lightbar_r: f32,
     pub lightbar_g: f32,
     pub lightbar_b: f32,
@@ -216,6 +219,11 @@ pub struct Profile {
     pub stick_mouse: StickMouseConfig,
 
     #[serde(default)]
+    pub steam_left_pad_mouse: SteamPadMouseConfig,
+    #[serde(default)]
+    pub steam_right_pad_mouse: SteamPadMouseConfig,
+
+    #[serde(default)]
     pub haptic_pattern: HapticPattern,
     #[serde(default)]
     pub haptic_strength: u8, // 0-7
@@ -227,6 +235,30 @@ pub struct Profile {
 }
 
 impl Profile {
+    pub fn matches_device(&self, kind: ControllerKind) -> bool {
+        self.device.is_steam() == kind.is_steam()
+    }
+
+    /// Convert a profile's device family while preserving every mapping and
+    /// configuration field.
+    pub fn convert_to_device(&mut self, kind: ControllerKind) {
+        self.device = kind;
+    }
+
+    pub fn default_for_device(name: String, kind: ControllerKind) -> Self {
+        let mut profile = Self {
+            name,
+            device: kind,
+            ..Default::default()
+        };
+        if kind.is_steam() {
+            profile.gyro_mouse.activation = GyroActivation::RightTrackpad;
+            profile.steam_left_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
+            profile.steam_right_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
+        }
+        profile
+    }
+
     pub fn migrate_legacy(&mut self) {
         if self.schema_version >= CURRENT_PROFILE_SCHEMA {
             return;
@@ -300,6 +332,8 @@ impl Profile {
             touchpad_mode: self.touchpad_mode,
             gyro_mouse: self.gyro_mouse.clone(),
             stick_mouse: self.stick_mouse.clone(),
+            steam_left_pad_mouse: self.steam_left_pad_mouse.clone(),
+            steam_right_pad_mouse: self.steam_right_pad_mouse.clone(),
         };
         transform.normalize_bindings();
         transform
@@ -322,6 +356,26 @@ impl Profile {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileNameConflict {
+    None,
+    SameFamily,
+    OtherFamily,
+}
+
+/// Profile filenames are global; classify a name collision by the family the
+/// existing profile belongs to.
+pub fn profile_name_conflict(
+    existing: Option<&Profile>,
+    kind: ControllerKind,
+) -> ProfileNameConflict {
+    match existing {
+        None => ProfileNameConflict::None,
+        Some(profile) if profile.matches_device(kind) => ProfileNameConflict::SameFamily,
+        Some(_) => ProfileNameConflict::OtherFamily,
+    }
+}
+
 pub struct ProfileManager {
     profiles_dir: PathBuf,
 }
@@ -339,14 +393,25 @@ impl ProfileManager {
         crate::common::config_dir().join("profiles")
     }
 
-    pub fn ensure_default_exists(&self) -> Profile {
-        if self.profile_exists("Default") {
-            self.load_profile("Default").unwrap_or_default()
+    pub fn default_profile_name(kind: ControllerKind) -> &'static str {
+        if kind.is_steam() {
+            "SteamDefault"
         } else {
-            let profile = Profile::default();
-            let _ = self.save_profile(&profile);
-            profile
+            "Default"
         }
+    }
+
+    pub fn ensure_default_for(&self, kind: ControllerKind) -> Profile {
+        let name = Self::default_profile_name(kind);
+        if let Ok(profile) = self.load_profile(name)
+            && profile.device.is_steam() == kind.is_steam()
+        {
+            return profile;
+        }
+        let mut profile = Profile::default_for_device(name.to_string(), kind);
+        profile.schema_version = CURRENT_PROFILE_SCHEMA;
+        let _ = self.save_profile(&profile);
+        profile
     }
 
     fn sanitize_filename(name: &str) -> String {
@@ -405,8 +470,8 @@ impl ProfileManager {
     }
 
     pub fn delete_profile(&self, name: &str) -> Result<()> {
-        if name == "Default" {
-            bail!("Cannot delete Default profile");
+        if name == "Default" || name == "SteamDefault" {
+            bail!("Cannot delete the default profile for this device");
         }
         let filename = format!("{}.json", Self::sanitize_filename(name));
         let path = self.profiles_dir.join(filename);
@@ -423,6 +488,17 @@ impl ProfileManager {
     }
 
     pub fn list_profiles(&self) -> Vec<Profile> {
+        self.load_all_profiles()
+    }
+
+    pub fn list_profiles_for(&self, kind: ControllerKind) -> Vec<Profile> {
+        self.load_all_profiles()
+            .into_iter()
+            .filter(|profile| profile.device.is_steam() == kind.is_steam())
+            .collect()
+    }
+
+    fn load_all_profiles(&self) -> Vec<Profile> {
         let mut profiles = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.profiles_dir) {
             for e in entries.flatten() {
@@ -451,6 +527,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             name: "Default".to_string(),
+            device: ControllerKind::DualSense,
             lightbar_r: 0.0,
             lightbar_g: 0.5,
             lightbar_b: 1.0,
@@ -496,6 +573,8 @@ impl Default for Profile {
             gyro_mouse: GyroConfig::default(),
 
             stick_mouse: StickMouseConfig::default(),
+            steam_left_pad_mouse: SteamPadMouseConfig::default(),
+            steam_right_pad_mouse: SteamPadMouseConfig::default(),
 
             haptic_pattern: HapticPattern::None,
             haptic_strength: 0,
@@ -509,6 +588,7 @@ impl Default for Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remap::SlotPolicy;
 
     const LEGACY: &str = include_str!("../tests/fixtures/profile_v1_legacy.json");
 
@@ -698,12 +778,76 @@ mod tests {
         p.press_timing = PressTiming {
             long_press_ms: 500,
             double_tap_ms: 250,
+            slot_policy: HashMap::new(),
         };
 
         let json = serde_json::to_string(&p).expect("serialize");
         let back: Profile = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.press_timing, p.press_timing);
         assert_eq!(p.to_input_transform().press_timing, p.press_timing);
+    }
+
+    #[test]
+    fn profile_round_trips_slot_policy_and_order() {
+        let mut p = Profile::default();
+        p.press_timing
+            .set_policy(Button::Cross, SlotPolicy::FirstMatch);
+        p.button_bindings.insert(
+            Button::Cross,
+            vec![
+                BindingSlot {
+                    binding: Binding::Gamepad(Button::Circle),
+                    press: PressType::LongPress,
+                },
+                BindingSlot::from(Binding::Gamepad(Button::Square)),
+                BindingSlot {
+                    binding: Binding::Gamepad(Button::Triangle),
+                    press: PressType::LongPress,
+                },
+            ],
+        );
+        p.layers.push(Layer {
+            activator: Button::L1,
+            bindings: HashMap::from([(
+                Button::Cross,
+                vec![BindingSlot::from(Binding::Gamepad(Button::DPadUp))],
+            )]),
+        });
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.press_timing.policy(Button::Cross),
+            SlotPolicy::FirstMatch
+        );
+        assert_eq!(
+            p.to_input_transform().press_timing.policy(Button::Cross),
+            SlotPolicy::FirstMatch
+        );
+        assert_eq!(
+            back.button_bindings.get(&Button::Cross),
+            p.button_bindings.get(&Button::Cross),
+            "slot order survives the round trip"
+        );
+        assert_eq!(back.layers, p.layers);
+        assert_eq!(back.schema_version, CURRENT_PROFILE_SCHEMA);
+    }
+
+    #[test]
+    fn old_profiles_without_slot_policy_default_to_combine() {
+        let mut p = Profile::default();
+        p.schema_version = 3;
+        let mut json: serde_json::Value = serde_json::to_value(&p).expect("serialize");
+        json.as_object_mut()
+            .expect("profile object")
+            .get_mut("press_timing")
+            .and_then(|timing| timing.as_object_mut())
+            .expect("press timing object")
+            .remove("slot_policy");
+
+        let back: Profile = serde_json::from_value(json).expect("legacy profile parses");
+        assert!(back.press_timing.slot_policy.is_empty());
+        assert_eq!(back.press_timing.policy(Button::Cross), SlotPolicy::Combine);
     }
 
     #[test]
@@ -769,6 +913,143 @@ mod tests {
     }
 
     #[test]
+    fn schema_3_profiles_migrate_with_default_steam_fields() {
+        let mut p = legacy();
+        p.schema_version = 3;
+        p.device = ControllerKind::DualSense;
+        p.migrate_legacy();
+        assert_eq!(p.schema_version, CURRENT_PROFILE_SCHEMA);
+        assert_eq!(p.device, ControllerKind::DualSense);
+        assert_eq!(p.steam_left_pad_mouse, SteamPadMouseConfig::default());
+        assert_eq!(p.steam_right_pad_mouse, SteamPadMouseConfig::default());
+    }
+
+    #[test]
+    fn old_profiles_default_to_dualsense() {
+        let parsed: Profile = serde_json::from_str(LEGACY).expect("legacy fixture parses");
+        assert_eq!(parsed.device, ControllerKind::DualSense);
+        assert_eq!(parsed.steam_left_pad_mouse, SteamPadMouseConfig::default());
+        assert_eq!(parsed.steam_right_pad_mouse, SteamPadMouseConfig::default());
+    }
+
+    #[test]
+    fn steam_profile_round_trips_device_and_trackpad_settings() {
+        let mut p = Profile {
+            name: "Steam Main".to_string(),
+            device: ControllerKind::SteamController,
+            ..Default::default()
+        };
+        p.steam_left_pad_mouse.mode = crate::trackpad_mouse::SteamPadMouseMode::Mouse;
+        p.steam_left_pad_mouse.sensitivity = 900.0;
+        p.steam_left_pad_mouse.scroll_sensitivity = 250.0;
+        p.steam_left_pad_mouse.scroll_natural = false;
+        p.steam_left_pad_mouse.haptic_strength = SteamPadHapticStrength::High;
+        p.steam_right_pad_mouse.invert_x = true;
+        p.steam_right_pad_mouse.mode = crate::trackpad_mouse::SteamPadMouseMode::Scroll;
+        p.button_bindings
+            .insert(Button::L4, vec![slot(Binding::Gamepad(Button::Cross))]);
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.device, ControllerKind::SteamController);
+        assert_eq!(back.steam_left_pad_mouse, p.steam_left_pad_mouse);
+        assert_eq!(back.steam_right_pad_mouse, p.steam_right_pad_mouse);
+        assert_eq!(
+            back.button_bindings.get(&Button::L4),
+            p.button_bindings.get(&Button::L4)
+        );
+        assert_eq!(
+            p.to_input_transform().steam_left_pad_mouse,
+            p.steam_left_pad_mouse
+        );
+    }
+
+    #[test]
+    fn new_steam_profiles_default_to_right_trackpad() {
+        let steam = Profile::default_for_device(
+            "SteamDefault".to_string(),
+            ControllerKind::SteamController,
+        );
+        assert_eq!(steam.gyro_mouse.activation, GyroActivation::RightTrackpad);
+
+        let dualsense =
+            Profile::default_for_device("Default".to_string(), ControllerKind::DualSense);
+        assert_eq!(dualsense.gyro_mouse.activation, GyroActivation::Touchpad);
+    }
+
+    #[test]
+    fn new_steam_profiles_default_to_medium_pad_haptics() {
+        let steam = Profile::default_for_device(
+            "SteamDefault".to_string(),
+            ControllerKind::SteamController,
+        );
+        assert_eq!(
+            steam.steam_left_pad_mouse.haptic_strength,
+            SteamPadHapticStrength::Medium
+        );
+        assert_eq!(
+            steam.steam_right_pad_mouse.haptic_strength,
+            SteamPadHapticStrength::Medium
+        );
+
+        let dualsense =
+            Profile::default_for_device("Default".to_string(), ControllerKind::DualSense);
+        assert_eq!(
+            dualsense.steam_left_pad_mouse.haptic_strength,
+            SteamPadHapticStrength::Off
+        );
+    }
+
+    #[test]
+    fn existing_profiles_keep_pad_haptics_off() {
+        let parsed: Profile = serde_json::from_str(LEGACY).expect("legacy fixture parses");
+        assert_eq!(
+            parsed.steam_left_pad_mouse.haptic_strength,
+            SteamPadHapticStrength::Off
+        );
+        assert_eq!(
+            parsed.steam_right_pad_mouse.haptic_strength,
+            SteamPadHapticStrength::Off
+        );
+    }
+
+    #[test]
+    fn existing_steam_touchpad_activation_is_preserved() {
+        let mut p =
+            Profile::default_for_device("Steam Main".to_string(), ControllerKind::SteamController);
+        p.gyro_mouse.activation = GyroActivation::Touchpad;
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.gyro_mouse.activation, GyroActivation::Touchpad);
+        assert_eq!(back.device, ControllerKind::SteamController);
+    }
+
+    #[test]
+    fn default_profile_names_are_device_specific() {
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::DualSense),
+            "Default"
+        );
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::DualSenseEdge),
+            "Default"
+        );
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::SteamController),
+            "SteamDefault"
+        );
+        for kind in [
+            ControllerKind::DualSense,
+            ControllerKind::DualSenseEdge,
+            ControllerKind::SteamController,
+        ] {
+            ProfileManager::validate_profile_name(ProfileManager::default_profile_name(kind))
+                .expect("default profile names must be valid filenames");
+        }
+    }
+
+    #[test]
     fn new_bindings_win_over_legacy_fields() {
         let mut p = legacy();
         p.button_bindings =
@@ -782,5 +1063,115 @@ mod tests {
         );
         assert!(!p.button_bindings.contains_key(&Button::L1));
         assert_eq!(p.schema_version, CURRENT_PROFILE_SCHEMA);
+    }
+
+    #[test]
+    fn legacy_profile_without_device_is_dualsense_only() {
+        let parsed: Profile = serde_json::from_str(LEGACY).expect("legacy fixture parses");
+        assert_eq!(parsed.device, ControllerKind::DualSense);
+        assert!(parsed.matches_device(ControllerKind::DualSense));
+        assert!(parsed.matches_device(ControllerKind::DualSenseEdge));
+        assert!(!parsed.matches_device(ControllerKind::SteamController));
+    }
+
+    #[test]
+    fn profile_name_conflicts_are_family_aware() {
+        let dualsense = Profile::default_for_device("Build".into(), ControllerKind::DualSense);
+        let steam = Profile::default_for_device("Build".into(), ControllerKind::SteamController);
+
+        assert_eq!(
+            profile_name_conflict(None, ControllerKind::DualSense),
+            ProfileNameConflict::None
+        );
+        assert_eq!(
+            profile_name_conflict(Some(&dualsense), ControllerKind::DualSenseEdge),
+            ProfileNameConflict::SameFamily
+        );
+        assert_eq!(
+            profile_name_conflict(Some(&dualsense), ControllerKind::SteamController),
+            ProfileNameConflict::OtherFamily
+        );
+        assert_eq!(
+            profile_name_conflict(Some(&steam), ControllerKind::DualSense),
+            ProfileNameConflict::OtherFamily
+        );
+    }
+
+    #[test]
+    fn conversion_preserves_mappings_and_configuration() {
+        let mut p = Profile::default_for_device("TheFinals".into(), ControllerKind::DualSense);
+        p.button_bindings.insert(
+            Button::Cross,
+            vec![slot(Binding::Key(crate::remap::Key::new("C").unwrap()))],
+        );
+        p.layers.push(Layer {
+            activator: Button::L1,
+            bindings: HashMap::from([(
+                Button::Circle,
+                vec![slot(Binding::Gamepad(Button::Square))],
+            )]),
+        });
+        p.lightbar_r = 1.0;
+        p.gyro_mouse.dots_per_360 = 1234.0;
+        let bindings = p.button_bindings.clone();
+        let layers = p.layers.clone();
+
+        p.convert_to_device(ControllerKind::SteamController);
+
+        assert_eq!(p.device, ControllerKind::SteamController);
+        assert_eq!(p.button_bindings, bindings);
+        assert_eq!(p.layers, layers);
+        assert_eq!(p.lightbar_r, 1.0);
+        assert_eq!(p.gyro_mouse.dots_per_360, 1234.0);
+    }
+
+    #[test]
+    fn new_steam_profile_round_trips_with_current_schema() {
+        let mut p =
+            Profile::default_for_device("Steam_New".into(), ControllerKind::SteamController);
+        p.schema_version = CURRENT_PROFILE_SCHEMA;
+        p.button_bindings
+            .insert(Button::L4, vec![slot(Binding::Gamepad(Button::Cross))]);
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.name, "Steam_New");
+        assert_eq!(back.device, ControllerKind::SteamController);
+        assert_eq!(back.schema_version, CURRENT_PROFILE_SCHEMA);
+        assert_eq!(
+            back.button_bindings.get(&Button::L4),
+            p.button_bindings.get(&Button::L4)
+        );
+    }
+
+    #[test]
+    fn steam_profile_file_round_trips_device() {
+        let dir = std::env::temp_dir().join(format!(
+            "gyro4u-profile-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp profile dir");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let profile =
+            Profile::default_for_device("TheFinals".into(), ControllerKind::SteamController);
+
+        pm.save_profile(&profile).expect("save profile");
+        let loaded = pm.load_profile("TheFinals").expect("load profile");
+
+        assert_eq!(loaded.device, ControllerKind::SteamController);
+        assert_eq!(loaded.schema_version, CURRENT_PROFILE_SCHEMA);
+        assert!(pm.profile_exists("TheFinals"));
+        assert_eq!(
+            pm.list_profiles_for(ControllerKind::SteamController).len(),
+            1
+        );
+        assert!(pm.list_profiles_for(ControllerKind::DualSense).is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

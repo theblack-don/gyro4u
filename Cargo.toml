@@ -2,7 +2,7 @@
 name = "gyro4u"
 version = "0.2.0"
 edition = "2024"
-description = "Gyro4U — DualSense controller utility"
+description = "Gyro4U — DualSense and Steam Controller utility"
 authors = [ "deadYokai" ]
 readme = "README.md"
 repository = "https://github.com/theblack-don/gyro4u"
@@ -20,7 +20,7 @@ rfd = "0.17.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 ureq = { version = "3.2.0", features = ["native-tls", "json"] }
-hidapi = { version = "2.6.6", default-features = false, features = [
+hidapi = { version = "2.6.7", default-features = false, features = [
   "linux-native",
 ] }
 udev = "0.9.3"

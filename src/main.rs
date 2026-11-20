@@ -7,6 +7,7 @@ use self::ipc::IpcClient;
 mod app;
 mod backend;
 mod common;
+mod controller;
 mod daemon;
 mod dualsense;
 mod firmware;
@@ -23,10 +24,12 @@ mod profiles;
 mod remap;
 mod settings;
 mod state;
+mod steam_controller;
 mod stick_mouse;
 mod style;
 mod theme;
 mod touchpad_filter;
+mod trackpad_mouse;
 mod transform;
 mod ui;
 mod uinput;
@@ -46,12 +49,34 @@ fn main() -> Result<(), eframe::Error> {
         return Ok(());
     }
 
+    if args.iter().any(|a| a == "--list-devices") {
+        match hidapi::HidApi::new() {
+            Ok(api) => {
+                let preference = settings::SettingsManager::new()
+                    .load()
+                    .controller_preference;
+                print!("{}", controller::format_device_report(&api, preference));
+            }
+            Err(e) => {
+                eprintln!("error: cannot initialize HID API: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     if args.len() >= 2 {
         let addr = ipc::daemon_endpoint();
         let mut client = match IpcClient::try_connect(&addr) {
             Some(c) => c,
             None => {
-                eprintln!("gyro4u daemon is not running");
+                match ipc::probe_daemon(&addr) {
+                    ipc::DaemonCompatibility::Incompatible { detail } => eprintln!(
+                        "gyro4u daemon is incompatible: {}. Stop it and restart the daemon.",
+                        detail
+                    ),
+                    _ => eprintln!("gyro4u daemon is not running"),
+                }
                 std::process::exit(1);
             }
         };
@@ -97,11 +122,13 @@ fn main() -> Result<(), eframe::Error> {
             }
             "--status" => {
                 match client.get_controller_info() {
-                    Ok(Some((serial, pid, is_bt))) => println!(
-                        "connected  serial={}  pid={:#06x}  {}",
+                    Ok(Some((serial, pid, is_bt, kind, transport))) => println!(
+                        "connected  serial={}  pid={:#06x}  {}  {}  {}",
                         serial,
                         pid,
-                        if is_bt { "bluetooth" } else { "usb" }
+                        kind.label(),
+                        if is_bt { "bluetooth" } else { "usb" },
+                        transport
                     ),
                     Ok(None) => println!("no device"),
                     Err(e) => {

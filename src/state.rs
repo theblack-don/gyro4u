@@ -8,6 +8,12 @@ use crate::profiles::TriggerConfig;
 use crate::remap::{BindingSlot, Layer, PressTiming};
 use crate::stick_mouse::StickMouseConfig;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingControllerTarget {
+    pub(crate) family: crate::controller::ControllerFamily,
+    pub(crate) since: Instant,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum ProgressUpdate {
     Progress(u32),
@@ -90,6 +96,8 @@ pub(crate) struct TouchpadState {
     pub(crate) tap_to_click: bool,
     pub(crate) natural_scrolling: bool,
     pub(crate) sensitivity: f32,
+    pub(crate) left_mouse: crate::trackpad_mouse::SteamPadMouseConfig,
+    pub(crate) right_mouse: crate::trackpad_mouse::SteamPadMouseConfig,
 }
 
 pub(crate) struct HapticState {

@@ -94,7 +94,13 @@ impl StickMouseRuntime {
         *self = Self::new();
     }
 
-    pub fn process(&mut self, raw: (u8, u8), cfg: &StickMouseConfig, timestamp: u32) -> (i32, i32) {
+    pub fn process(
+        &mut self,
+        raw: (u8, u8),
+        cfg: &StickMouseConfig,
+        timestamp: u32,
+        timestamp_unit_us: f32,
+    ) -> (i32, i32) {
         if !cfg.enabled {
             self.accum = [0.0; 2];
             return (0, 0);
@@ -121,7 +127,12 @@ impl StickMouseRuntime {
         if delta == 0 {
             return (0, 0);
         }
-        let dt = (delta as f32 / TIMESTAMP_UNITS_PER_SECOND).clamp(DT_MIN, DT_MAX);
+        let units = if timestamp_unit_us.is_finite() && timestamp_unit_us > 0.0 {
+            timestamp_unit_us
+        } else {
+            1_000_000.0 / TIMESTAMP_UNITS_PER_SECOND
+        };
+        let dt = (delta as f32 * units / 1_000_000.0).clamp(DT_MIN, DT_MAX);
 
         let t = ((magnitude - deadzone) / (1.0 - deadzone).max(f32::EPSILON)).clamp(0.0, 1.0);
         let curve = cfg.curve.apply(t);
@@ -159,6 +170,8 @@ impl StickMouseRuntime {
 mod tests {
     use super::*;
 
+    const UNIT: f32 = 1.0 / 3.0;
+
     fn cfg() -> StickMouseConfig {
         StickMouseConfig {
             enabled: true,
@@ -171,7 +184,7 @@ mod tests {
         let mut ts = 0u32;
         let mut out = (0, 0);
         for _ in 0..=ticks {
-            let (x, y) = runtime.process(raw, cfg, ts);
+            let (x, y) = runtime.process(raw, cfg, ts, UNIT);
             out.0 += x;
             out.1 += y;
             ts = ts.wrapping_add(dt_raw);
@@ -204,9 +217,9 @@ mod tests {
         let cfg = cfg();
         let mut runtime = StickMouseRuntime::new();
 
-        assert_eq!(runtime.process((128, 128), &cfg, 0), (0, 0));
-        assert_eq!(runtime.process((145, 128), &cfg, 30_000), (0, 0));
-        assert_eq!(runtime.process((128, 128), &cfg, 60_000), (0, 0));
+        assert_eq!(runtime.process((128, 128), &cfg, 0, UNIT), (0, 0));
+        assert_eq!(runtime.process((145, 128), &cfg, 30_000, UNIT), (0, 0));
+        assert_eq!(runtime.process((128, 128), &cfg, 60_000, UNIT), (0, 0));
 
         let mut disabled = cfg.clone();
         disabled.enabled = false;
@@ -257,10 +270,10 @@ mod tests {
         cfg.smoothing = 0.5;
         let mut runtime = StickMouseRuntime::new();
 
-        assert_eq!(runtime.process((255, 128), &cfg, 0), (0, 0));
-        assert_eq!(runtime.process((255, 128), &cfg, 30_000), (12, 0));
-        assert_eq!(runtime.process((191, 128), &cfg, 60_000), (8, 0));
-        assert_eq!(runtime.process((255, 128), &cfg, 90_000), (10, 0));
+        assert_eq!(runtime.process((255, 128), &cfg, 0, UNIT), (0, 0));
+        assert_eq!(runtime.process((255, 128), &cfg, 30_000, UNIT), (12, 0));
+        assert_eq!(runtime.process((191, 128), &cfg, 60_000, UNIT), (8, 0));
+        assert_eq!(runtime.process((255, 128), &cfg, 90_000, UNIT), (10, 0));
     }
 
     #[test]
@@ -274,9 +287,18 @@ mod tests {
         let cfg = cfg();
         let mut runtime = StickMouseRuntime::new();
 
-        assert_eq!(runtime.process((255, 128), &cfg, 1_000), (0, 0));
-        assert_eq!(runtime.process((255, 128), &cfg, 1_000), (0, 0));
-        assert_ne!(runtime.process((255, 128), &cfg, 31_000), (0, 0));
+        assert_eq!(runtime.process((255, 128), &cfg, 1_000, UNIT), (0, 0));
+        assert_eq!(runtime.process((255, 128), &cfg, 1_000, UNIT), (0, 0));
+        assert_ne!(runtime.process((255, 128), &cfg, 31_000, UNIT), (0, 0));
+    }
+
+    #[test]
+    fn device_timestamp_units_produce_motion() {
+        let cfg = cfg();
+        let mut runtime = StickMouseRuntime::new();
+        assert_eq!(runtime.process((255, 128), &cfg, 0, 32.0), (0, 0));
+        let (x, _) = runtime.process((255, 128), &cfg, 300, 32.0);
+        assert!(x > 0, "300 * 32us should produce a usable dt");
     }
 
     #[test]
@@ -285,8 +307,8 @@ mod tests {
         let mut runtime = StickMouseRuntime::new();
         let start = u32::MAX - 14_999;
 
-        assert_eq!(runtime.process((255, 128), &cfg, start), (0, 0));
-        let (x, _) = runtime.process((255, 128), &cfg, start.wrapping_add(30_000));
+        assert_eq!(runtime.process((255, 128), &cfg, start, UNIT), (0, 0));
+        let (x, _) = runtime.process((255, 128), &cfg, start.wrapping_add(30_000), UNIT);
         assert_ne!(x, 0, "wrapped timestamp should still produce motion");
     }
 }

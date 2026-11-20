@@ -62,6 +62,10 @@ impl DS4UApp {
         }
     }
     pub(crate) fn render_touchpad_section(&mut self, ui: &mut Ui) {
+        if self.is_steam() {
+            self.render_steam_trackpads_section(ui);
+            return;
+        }
         let c = self.theme.colors.clone();
         let mut changed = false;
         let mut show_only_changed = false;

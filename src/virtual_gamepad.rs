@@ -2,12 +2,15 @@
 
 use anyhow::Result;
 
-use crate::common::DSE_PID;
 use crate::inputs::{
     BTN_CIRCLE, BTN_CREATE, BTN_CROSS, BTN_EDGE_FN_LEFT, BTN_EDGE_FN_RIGHT, BTN_EDGE_PADDLE_LEFT,
     BTN_EDGE_PADDLE_RIGHT, BTN_L1, BTN_L2, BTN_L3, BTN_OPTIONS, BTN_PS, BTN_R1, BTN_R2, BTN_R3,
-    BTN_SQUARE, BTN_TRIANGLE, ControllerState, DPAD_E, DPAD_N, DPAD_NE, DPAD_NEUTRAL, DPAD_NW,
-    DPAD_S, DPAD_SE, DPAD_SW, DPAD_W, TouchPoint,
+    BTN_SQUARE, BTN_TRIANGLE, ControllerKind, ControllerState, DPAD_E, DPAD_N, DPAD_NE, DPAD_NW,
+    DPAD_S, DPAD_SE, DPAD_SW, DPAD_W, EXTRA_BTN_L4, EXTRA_BTN_L5, EXTRA_BTN_LEFT_GRIP,
+    EXTRA_BTN_LEFT_PAD, EXTRA_BTN_LEFT_PAD_TOUCH, EXTRA_BTN_LEFT_STICK_TOUCH,
+    EXTRA_BTN_LEFT_TRIGGER_CLICK, EXTRA_BTN_QAM, EXTRA_BTN_R4, EXTRA_BTN_R5, EXTRA_BTN_RIGHT_GRIP,
+    EXTRA_BTN_RIGHT_PAD, EXTRA_BTN_RIGHT_PAD_TOUCH, EXTRA_BTN_RIGHT_STICK_TOUCH,
+    EXTRA_BTN_RIGHT_TRIGGER_CLICK, EXTRA_BTN_STEAM,
 };
 use crate::uinput::{EV_ABS, EV_KEY, UinputDevice, UinputSpec};
 
@@ -29,6 +32,39 @@ const BTN_TRIGGER_HAPPY1: u16 = 0x2c0;
 const BTN_TRIGGER_HAPPY2: u16 = 0x2c1;
 const BTN_TRIGGER_HAPPY3: u16 = 0x2c2;
 const BTN_TRIGGER_HAPPY4: u16 = 0x2c3;
+const BTN_TRIGGER_HAPPY5: u16 = 0x2c4;
+const BTN_TRIGGER_HAPPY6: u16 = 0x2c5;
+const BTN_TRIGGER_HAPPY7: u16 = 0x2c6;
+const BTN_TRIGGER_HAPPY8: u16 = 0x2c7;
+const BTN_TRIGGER_HAPPY9: u16 = 0x2c8;
+const BTN_TRIGGER_HAPPY10: u16 = 0x2c9;
+const BTN_TRIGGER_HAPPY11: u16 = 0x2ca;
+const BTN_TRIGGER_HAPPY12: u16 = 0x2cb;
+const BTN_TRIGGER_HAPPY13: u16 = 0x2cc;
+const BTN_TRIGGER_HAPPY14: u16 = 0x2cd;
+const BTN_TRIGGER_HAPPY15: u16 = 0x2ce;
+const BTN_TRIGGER_HAPPY16: u16 = 0x2cf;
+
+// Stable Steam Controller extra-button ordering. The values are remappable
+// gamepad outputs, not raw pad coordinates.
+const STEAM_EXTRA_KEYS: [(u32, u16); 16] = [
+    (EXTRA_BTN_L4, BTN_TRIGGER_HAPPY1),
+    (EXTRA_BTN_L5, BTN_TRIGGER_HAPPY2),
+    (EXTRA_BTN_R4, BTN_TRIGGER_HAPPY3),
+    (EXTRA_BTN_R5, BTN_TRIGGER_HAPPY4),
+    (EXTRA_BTN_LEFT_GRIP, BTN_TRIGGER_HAPPY5),
+    (EXTRA_BTN_RIGHT_GRIP, BTN_TRIGGER_HAPPY6),
+    (EXTRA_BTN_LEFT_PAD, BTN_TRIGGER_HAPPY7),
+    (EXTRA_BTN_RIGHT_PAD, BTN_TRIGGER_HAPPY8),
+    (EXTRA_BTN_QAM, BTN_TRIGGER_HAPPY9),
+    (EXTRA_BTN_STEAM, BTN_TRIGGER_HAPPY10),
+    (EXTRA_BTN_LEFT_STICK_TOUCH, BTN_TRIGGER_HAPPY11),
+    (EXTRA_BTN_RIGHT_STICK_TOUCH, BTN_TRIGGER_HAPPY12),
+    (EXTRA_BTN_LEFT_PAD_TOUCH, BTN_TRIGGER_HAPPY13),
+    (EXTRA_BTN_RIGHT_PAD_TOUCH, BTN_TRIGGER_HAPPY14),
+    (EXTRA_BTN_LEFT_TRIGGER_CLICK, BTN_TRIGGER_HAPPY15),
+    (EXTRA_BTN_RIGHT_TRIGGER_CLICK, BTN_TRIGGER_HAPPY16),
+];
 
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
@@ -66,18 +102,24 @@ const AXES: [(u16, i32, i32, i32); 8] = [
 
 pub struct VirtualGamepad {
     dev: UinputDevice,
-    has_edge: bool,
+    kind: ControllerKind,
 }
 
 impl VirtualGamepad {
-    pub fn new(vendor: u16, product: u16) -> Result<Self> {
-        let has_edge = product == DSE_PID;
+    pub fn new(kind: ControllerKind, vendor: u16, product: u16) -> Result<Self> {
         let mut keys = KEYS.to_vec();
-        if has_edge {
+        if kind == ControllerKind::DualSenseEdge {
             keys.extend_from_slice(&EDGE_KEYS);
+        } else if kind.is_steam() {
+            keys.extend(STEAM_EXTRA_KEYS.iter().map(|(_, key)| *key));
         }
+        let name = if kind.is_steam() {
+            "Gyro4U Steam Controller"
+        } else {
+            "Gyro4U DualSense Wireless Controller"
+        };
         let dev = UinputDevice::create(UinputSpec {
-            name: "Gyro4U DualSense Wireless Controller",
+            name,
             vendor,
             product,
             version: DS_EVDEV_VERSION,
@@ -86,7 +128,7 @@ impl VirtualGamepad {
             rels: &[],
             props: &[],
         })?;
-        Ok(Self { dev, has_edge })
+        Ok(Self { dev, kind })
     }
 
     fn axis(raw: u8) -> i32 {
@@ -129,11 +171,12 @@ impl VirtualGamepad {
         changed |= dev.emit(EV_KEY, BTN_TR2, (b & BTN_R2 != 0) as i32);
         changed |= dev.emit(EV_KEY, BTN_SELECT, (b & BTN_CREATE != 0) as i32);
         changed |= dev.emit(EV_KEY, BTN_START, (b & BTN_OPTIONS != 0) as i32);
-        changed |= dev.emit(EV_KEY, BTN_MODE, (b & BTN_PS != 0) as i32);
+        let mode = b & BTN_PS != 0 || s.extra_buttons & EXTRA_BTN_STEAM != 0;
+        changed |= dev.emit(EV_KEY, BTN_MODE, mode as i32);
         changed |= dev.emit(EV_KEY, BTN_THUMBL, (b & BTN_L3 != 0) as i32);
         changed |= dev.emit(EV_KEY, BTN_THUMBR, (b & BTN_R3 != 0) as i32);
 
-        if self.has_edge {
+        if self.kind == ControllerKind::DualSenseEdge {
             changed |= dev.emit(
                 EV_KEY,
                 BTN_TRIGGER_HAPPY1,
@@ -154,6 +197,10 @@ impl VirtualGamepad {
                 BTN_TRIGGER_HAPPY4,
                 (b & BTN_EDGE_PADDLE_RIGHT != 0) as i32,
             );
+        } else if self.kind.is_steam() {
+            for (mask, key) in STEAM_EXTRA_KEYS {
+                changed |= dev.emit(EV_KEY, key, (s.extra_buttons & mask != 0) as i32);
+            }
         }
 
         if !changed {
@@ -164,21 +211,24 @@ impl VirtualGamepad {
     }
 
     pub fn reset(&mut self) {
-        let neutral = ControllerState {
-            left_x: 128,
-            left_y: 128,
-            right_x: 128,
-            right_y: 128,
-            l2: 0,
-            r2: 0,
-            buttons: 0,
-            dpad: DPAD_NEUTRAL,
-            gyro: [0; 3],
-            accel: [0; 3],
-            sensor_timestamp: 0,
-            touch_count: 0,
-            touch_points: [TouchPoint::default(); 2],
-        };
-        let _ = self.update(&neutral);
+        let _ = self.update(&ControllerState::default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn steam_extra_keys_cover_every_extra_mask_once() {
+        let masks: HashSet<u32> = STEAM_EXTRA_KEYS.iter().map(|(mask, _)| *mask).collect();
+        let keys: HashSet<u16> = STEAM_EXTRA_KEYS.iter().map(|(_, key)| *key).collect();
+        assert_eq!(masks.len(), STEAM_EXTRA_KEYS.len());
+        assert_eq!(keys.len(), STEAM_EXTRA_KEYS.len());
+        for (mask, _) in STEAM_EXTRA_KEYS {
+            assert_eq!(mask.count_ones(), 1);
+            assert!(mask <= crate::inputs::EXTRA_BTN_RIGHT_TRIGGER_CLICK);
+        }
     }
 }

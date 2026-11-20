@@ -3,6 +3,9 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 
 use crate::common::{DS_PID, DS_VID, DSE_PID};
+use crate::steam_controller::{
+    STEAM_PID_BLE, STEAM_PID_PUCK, STEAM_PID_RECEIVER, STEAM_PID_WIRED, STEAM_VID,
+};
 
 const TAG: &str = "[gyro4u daemon]";
 
@@ -87,7 +90,15 @@ impl InputGrab {
 
             let is_dualsense =
                 vendor == Some(DS_VID) && matches!(product, Some(DS_PID) | Some(DSE_PID));
-            if !is_dualsense {
+            let is_steam = vendor == Some(STEAM_VID)
+                && matches!(
+                    product,
+                    Some(STEAM_PID_WIRED)
+                        | Some(STEAM_PID_BLE)
+                        | Some(STEAM_PID_PUCK)
+                        | Some(STEAM_PID_RECEIVER)
+                );
+            if !is_dualsense && !is_steam {
                 continue;
             }
 
