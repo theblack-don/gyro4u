@@ -179,15 +179,22 @@ The package installs the `Gyro4U` desktop entry and hicolor icon. See the
 ### Fedora / COPR
 
 A spec file is provided at `packaging/fedora/gyro4u.spec`. Create a COPR project
-from the GitHub repository and point it at that spec; once the project has built:
+from the GitHub repository and point it at that spec. Enable **Internet access
+for build** in the COPR project settings so Cargo can fetch locked crates, or
+provide vendored crates instead.
+
+The RPM `Source0` URL uses the version tag. Create and push it before building:
+
+```sh
+git tag -a v0.2.0 -m "Gyro4U 0.2.0"
+git push origin v0.2.0
+```
+
+Once the project has built:
 
 ```sh
 sudo dnf install gyro4u
 ```
-
-The source tag `v0.2.0` must exist for the RPM `Source0` URL. COPR builds may
-need vendored crates or network access for Cargo; configure the project
-accordingly.
 
 ## Building
 

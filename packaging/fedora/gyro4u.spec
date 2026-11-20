@@ -4,7 +4,7 @@
 Name:           gyro4u
 Version:        0.2.0
 Release:        1%{?dist}
-Summary:        DualSense controller utility
+Summary:        DualSense and Steam Controller utility
 
 License:        MIT
 URL:            https://github.com/theblack-don/gyro4u
@@ -31,9 +31,10 @@ BuildRequires:  clang
 BuildRequires:  lld
 
 %description
-Gyro4U is a native Linux GUI utility for configuring DualSense and DualSense
-Edge controllers: input remapping, layers, gyro-to-mouse, stick curves, adaptive
-triggers, haptics, lightbar, profiles, and firmware updates.
+Gyro4U is a native Linux GUI utility for configuring DualSense, DualSense Edge,
+and Steam Controller (2026) controllers: input remapping, layers, trackpad
+scrolling and haptics, gyro-to-mouse, stick curves, adaptive triggers, profiles,
+and firmware updates.
 
 %prep
 %autosetup -n gyro4u-%{version}
