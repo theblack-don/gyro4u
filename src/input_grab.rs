@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 
 use crate::common::{DS_PID, DS_VID, DSE_PID};
+use crate::eightbitdo::{EIGHTBITDO_PRO3_PID, EIGHTBITDO_VID};
 use crate::steam_controller::{
     STEAM_PID_BLE, STEAM_PID_PUCK, STEAM_PID_RECEIVER, STEAM_PID_WIRED, STEAM_VID,
 };
@@ -98,7 +99,9 @@ impl InputGrab {
                         | Some(STEAM_PID_PUCK)
                         | Some(STEAM_PID_RECEIVER)
                 );
-            if !is_dualsense && !is_steam {
+            let is_eightbitdo =
+                vendor == Some(EIGHTBITDO_VID) && matches!(product, Some(EIGHTBITDO_PRO3_PID));
+            if !is_dualsense && !is_steam && !is_eightbitdo {
                 continue;
             }
 

@@ -17,6 +17,10 @@ impl DS4UApp {
             self.render_steam_inputs_section(ui);
             return;
         }
+        if self.is_eightbitdo() {
+            self.render_eightbitdo_inputs_section(ui);
+            return;
+        }
         let c = &self.theme.colors;
         ui.add_space(20.0);
         ui.vertical_centered(|ui| {
@@ -292,6 +296,46 @@ impl DS4UApp {
                     }
                 }
             }
+        });
+    }
+
+    pub(crate) fn render_eightbitdo_inputs_section(&self, ui: &mut Ui) {
+        let c = &self.theme.colors;
+        ui.add_space(20.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("LIVE VISUALISATION")
+                    .size(15.0)
+                    .strong()
+                    .color(c.accent())
+                    .extra_letter_spacing(2.0),
+            );
+            ui.label(
+                RichText::new("8BitDo Pro 3 physical state (pre-remap)")
+                    .size(12.0)
+                    .italics()
+                    .color(c.text_dim()),
+            );
+        });
+        ui.add_space(20.0);
+
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let state = self.input.controller_state.unwrap_or_default();
+        ui.vertical_centered(|ui| {
+            let height = width * crate::ui::eightbitdo_layout::VIEWBOX_H
+                / crate::ui::eightbitdo_layout::VIEWBOX_W;
+            let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::hover());
+            let layout = crate::ui::eightbitdo_layout::EightBitDoLayout::fit(response.rect);
+            crate::ui::eightbitdo::paint(
+                ui,
+                &painter,
+                &layout,
+                Some(&state),
+                None,
+                None,
+                self.abxy_layout(),
+                c,
+            );
         });
     }
 

@@ -243,7 +243,7 @@ impl DS4UApp {
                     ui,
                     &c,
                     "Automatic",
-                    "DualSense preferred; select Steam to switch",
+                    "DualSense preferred; Steam then 8BitDo",
                     preference == ControllerPreference::Auto,
                 ) {
                     switch_to = Some(ControllerPreference::Auto);
@@ -291,6 +291,16 @@ impl DS4UApp {
                 section,
                 Section::Triggers
                     | Section::Haptics
+                    | Section::Lightbar
+                    | Section::Audio
+                    | Section::Advanced
+            );
+        }
+        if self.is_eightbitdo() {
+            return !matches!(
+                section,
+                Section::Triggers
+                    | Section::Touchpad
                     | Section::Lightbar
                     | Section::Audio
                     | Section::Advanced

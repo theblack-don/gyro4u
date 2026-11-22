@@ -58,7 +58,7 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Gyro4U — DualSense and Steam Controller utility";
+              description = "Gyro4U — DualSense, Steam Controller, and 8BitDo Pro 3 utility";
               homepage = "https://github.com/theblack-don/gyro4u";
               license = licenses.mit;
               mainProgram = "gyro4u";

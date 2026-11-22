@@ -8,7 +8,7 @@ use egui::{
 
 use crate::app::DS4UApp;
 use crate::common::TouchpadMode;
-use crate::inputs::{ALL_BUTTONS, Button, ControllerKind};
+use crate::inputs::{ALL_BUTTONS, AbxyLayout, Button, ControllerKind};
 use crate::keycodes::KEY_TABLE;
 use crate::remap::{
     Binding, BindingSlot, Key, Layer, MouseButton, PressType, ProfileAction, STICK_DIRS,
@@ -159,6 +159,60 @@ const STEAM_GROUPS: &[(&str, &[Button])] = &[
     (
         "System",
         &[Button::Create, Button::Options, Button::Steam, Button::Qam],
+    ),
+];
+
+const EIGHTBITDO_GROUPS: &[(&str, &[Button])] = &[
+    (
+        "Face Buttons",
+        &[
+            Button::Cross,
+            Button::Circle,
+            Button::Square,
+            Button::Triangle,
+        ],
+    ),
+    (
+        "D-Pad",
+        &[
+            Button::DPadUp,
+            Button::DPadRight,
+            Button::DPadDown,
+            Button::DPadLeft,
+        ],
+    ),
+    (
+        "Shoulders & Triggers",
+        &[Button::L1, Button::R1, Button::L2, Button::R2],
+    ),
+    ("Sticks", &[Button::L3, Button::R3]),
+    (
+        "Left Stick (Digital)",
+        &[
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+        ],
+    ),
+    (
+        "Right Stick (Digital)",
+        &[
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ],
+    ),
+    ("System", &[Button::Create, Button::Options, Button::PS]),
+    (
+        "Extra Buttons",
+        &[
+            Button::EightBitDoL4,
+            Button::EightBitDoR4,
+            Button::EightBitDoPL,
+            Button::EightBitDoPR,
+        ],
     ),
 ];
 
@@ -326,6 +380,53 @@ impl DS4UApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if self.is_eightbitdo() {
+                    ds_section(ui, &c, "ABXY Layout");
+                    let mut layout = self.abxy_layout();
+                    ds_row(ui, |ui| {
+                        ds_label(ui, "Button caps");
+                        if ds_pill_button(
+                            ui,
+                            &c,
+                            AbxyLayout::Xbox.label(),
+                            layout == AbxyLayout::Xbox,
+                        )
+                        .clicked()
+                        {
+                            layout = AbxyLayout::Xbox;
+                        }
+                        ui.add_space(4.0);
+                        if ds_pill_button(
+                            ui,
+                            &c,
+                            AbxyLayout::Switch.label(),
+                            layout == AbxyLayout::Switch,
+                        )
+                        .clicked()
+                        {
+                            layout = AbxyLayout::Switch;
+                        }
+                    });
+                    if layout != self.abxy_layout()
+                        && let Some(profile) = self.current_profile.as_mut()
+                    {
+                        profile.eightbitdo_abxy_layout = layout;
+                        changed = true;
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(ROW_PAD_X);
+                        ui.label(
+                            RichText::new(
+                                "This only changes the labels to match the physical button caps; \
+                                 the HID button positions and bindings do not change.",
+                            )
+                            .size(12.0)
+                            .italics()
+                            .color(c.text_dim()),
+                        );
+                    });
+                }
+
                 ds_section(ui, &c, "Editing");
                 changed |= self.render_editing_selector(ui, &c);
 
@@ -371,6 +472,10 @@ impl DS4UApp {
                         "Click a control on the diagram or a row below to open the editor \
                          popup. Steam pad touches/clicks, grips, back buttons, Steam and QAM \
                          are usable mapping sources."
+                    } else if self.is_eightbitdo() {
+                        "Click a control on the diagram or a row below to open the editor \
+                         popup. L4/R4 and PL/PR are Pro 3 extras; Star and Profile are \
+                         on-controller functions and are not host inputs."
                     } else {
                         "Click a control on the diagram or a row below to open the editor \
                          popup. Unbound controls pass through unchanged. Dashed markers \
@@ -382,6 +487,8 @@ impl DS4UApp {
 
                 let groups = if self.is_steam() {
                     STEAM_GROUPS
+                } else if self.is_eightbitdo() {
+                    EIGHTBITDO_GROUPS
                 } else {
                     GROUPS
                 };
@@ -397,7 +504,7 @@ impl DS4UApp {
                         let mut clicked = false;
                         ds_row(ui, |ui| {
                             let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
-                            ds_label(ui, btn.device_label(kind));
+                            ds_label(ui, btn.device_label_with_layout(kind, self.abxy_layout()));
                             clicked = ds_pill_button(ui, &c, &summary, active).clicked();
                         });
                         clicked |= ui
@@ -436,6 +543,7 @@ impl DS4UApp {
 
     fn render_editing_selector(&mut self, ui: &mut Ui, c: &ThemeColors) -> bool {
         let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
+        let abxy = self.abxy_layout();
         let mut changed = false;
         let mut select: Option<Option<usize>> = None;
         let mut add_layer = false;
@@ -451,7 +559,14 @@ impl DS4UApp {
             ui.add_space(4.0);
             for (index, layer) in self.remap.layers.iter().enumerate() {
                 let active = self.remap.selected_layer == Some(index);
-                if ds_pill_button(ui, c, layer.activator.device_label(kind), active).clicked() {
+                if ds_pill_button(
+                    ui,
+                    c,
+                    layer.activator.device_label_with_layout(kind, abxy),
+                    active,
+                )
+                .clicked()
+                {
                     select = Some(Some(index));
                 }
                 ui.add_space(4.0);
@@ -495,11 +610,14 @@ impl DS4UApp {
             ds_row(ui, |ui| {
                 ds_label(ui, "Layer key");
                 egui::ComboBox::from_id_salt("ds4u_mapping_layer_activator")
-                    .selected_text(own.device_label(kind))
+                    .selected_text(own.device_label_with_layout(kind, abxy))
                     .show_ui(ui, |ui| {
                         for btn in &choices {
                             if ui
-                                .selectable_label(own == *btn, btn.device_label(kind))
+                                .selectable_label(
+                                    own == *btn,
+                                    btn.device_label_with_layout(kind, abxy),
+                                )
                                 .clicked()
                                 && own != *btn
                             {
@@ -606,6 +724,10 @@ impl DS4UApp {
     fn render_mapping_diagram(&mut self, ui: &mut Ui, c: &ThemeColors) {
         if self.is_steam() {
             self.render_steam_mapping_diagram(ui, c);
+            return;
+        }
+        if self.is_eightbitdo() {
+            self.render_eightbitdo_mapping_diagram(ui, c);
             return;
         }
         let side = ui.available_width().min(760.0).clamp(320.0, 620.0);
@@ -977,6 +1099,67 @@ impl DS4UApp {
         self.render_steam_rear_mapping_chips(ui, c);
     }
 
+    fn render_eightbitdo_mapping_diagram(&mut self, ui: &mut Ui, c: &ThemeColors) {
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let abxy = self.abxy_layout();
+        let controller = self.input.controller_state;
+        let pressed: Vec<Button> = controller
+            .map(|s| {
+                ALL_BUTTONS
+                    .iter()
+                    .copied()
+                    .filter(|b| b.is_pressed(&s))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ui.vertical_centered(|ui| {
+            let height = width * crate::ui::eightbitdo_layout::VIEWBOX_H
+                / crate::ui::eightbitdo_layout::VIEWBOX_W;
+            let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::click());
+            let layout = crate::ui::eightbitdo_layout::EightBitDoLayout::fit(response.rect);
+            let pointer = response.hover_pos();
+            let hovered = pointer.and_then(|p| layout.hit_test(p));
+            crate::ui::eightbitdo::paint(
+                ui,
+                &painter,
+                &layout,
+                controller.as_ref(),
+                self.remap.selected,
+                hovered,
+                abxy,
+                c,
+            );
+
+            if let (Some(pointer), Some(button)) = (pointer, hovered) {
+                draw_hover_label(
+                    &painter,
+                    response.rect,
+                    pointer,
+                    button.device_label_with_layout(ControllerKind::EightBitDoPro3, abxy),
+                    c,
+                );
+            }
+
+            if let Some(p) = response
+                .clicked()
+                .then(|| response.interact_pointer_pos())
+                .flatten()
+                && let Some(button) = layout.hit_test(p)
+            {
+                self.remap.selected = Some(button);
+            }
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Physical: {}", label_list(&pressed)))
+                        .size(12.0)
+                        .color(c.text_dim()),
+                );
+            });
+        });
+    }
+
     fn render_steam_rear_mapping_chips(&mut self, ui: &mut Ui, c: &ThemeColors) {
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -1085,6 +1268,8 @@ impl DS4UApp {
         };
 
         let mut changed = false;
+        let controller_kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
+        let abxy = self.abxy_layout();
         let in_layer = self.remap.selected_layer.is_some();
         let current = self
             .selected_bindings()
@@ -1099,7 +1284,7 @@ impl DS4UApp {
         };
 
         ds_row(ui, |ui| {
-            ds_label(ui, selected.label());
+            ds_label(ui, selected.device_label_with_layout(controller_kind, abxy));
             ui.label(RichText::new(summary).size(17.0).strong());
         });
 
@@ -1256,15 +1441,14 @@ impl DS4UApp {
             ds_label(ui, "Target");
             match kind {
                 TargetKind::Gamepad => {
-                    let controller_kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
                     egui::ComboBox::from_id_salt("ds4u_mapping_target_pick")
-                        .selected_text(pick.device_label(controller_kind))
+                        .selected_text(pick.device_label_with_layout(controller_kind, abxy))
                         .show_ui(ui, |ui| {
                             for btn in controller_kind.target_buttons() {
                                 if ui
                                     .selectable_label(
                                         pick == *btn,
-                                        btn.device_label(controller_kind),
+                                        btn.device_label_with_layout(controller_kind, abxy),
                                     )
                                     .clicked()
                                 {

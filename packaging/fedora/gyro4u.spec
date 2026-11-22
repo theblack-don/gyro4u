@@ -4,7 +4,7 @@
 Name:           gyro4u
 Version:        0.2.0
 Release:        1%{?dist}
-Summary:        DualSense and Steam Controller utility
+Summary:        DualSense, Steam Controller, and 8BitDo Pro 3 utility
 
 License:        MIT
 URL:            https://github.com/theblack-don/gyro4u
@@ -32,9 +32,12 @@ BuildRequires:  lld
 
 %description
 Gyro4U is a native Linux GUI utility for configuring DualSense, DualSense Edge,
-and Steam Controller (2026) controllers: input remapping, layers, trackpad
-scrolling and haptics, gyro-to-mouse, stick curves, adaptive triggers, profiles,
-and firmware updates.
+Steam Controller (2026), and 8BitDo Pro 3 controllers: input remapping, layers,
+trackpad scrolling and haptics, gyro-to-mouse, stick curves, adaptive triggers,
+profiles, and DualSense firmware updates. 8BitDo support covers wired or
+Bluetooth DInput, extra buttons, basic rumble, and battery; Bluetooth is
+experimental, the 2.4G receiver is not supported, and lightbar, audio, firmware,
+adaptive triggers, and touchpad features are unavailable.
 
 %prep
 %autosetup -n gyro4u-%{version}

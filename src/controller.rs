@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common::{BatteryInfo, DS_PID, DS_VID, DSE_PID, MicLedState},
     dualsense::{DualSense, HAPTICS_PACKET_SAMPLES},
+    eightbitdo::{self, EightBitDoPro3},
     inputs::{ControllerCapabilities, ControllerKind, ControllerState},
     settings::ControllerPreference,
     steam_controller::{self, SteamController, SteamPadHaptic, SteamPadSide},
@@ -38,6 +39,7 @@ pub struct PolledInput {
 pub enum ControllerInner {
     DualSense(DualSense),
     Steam(SteamController),
+    EightBitDo(EightBitDoPro3),
 }
 
 pub struct PhysicalController {
@@ -45,38 +47,40 @@ pub struct PhysicalController {
     info: ControllerInfo,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ControllerFamily {
-    DualSense,
-    Steam,
+pub use crate::inputs::ControllerFamily;
+
+/// Presence snapshot for all supported families. Auto selection prefers
+/// DualSense, then Steam, then 8BitDo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FamilyPresence {
+    pub dualsense: bool,
+    pub steam: bool,
+    pub eightbitdo: bool,
 }
 
-impl ControllerFamily {
-    pub fn is_steam(self) -> bool {
-        matches!(self, Self::Steam)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::DualSense => "DualSense",
-            Self::Steam => "Steam Controller",
+impl FamilyPresence {
+    pub fn present(self, family: ControllerFamily) -> bool {
+        match family {
+            ControllerFamily::DualSense => self.dualsense,
+            ControllerFamily::Steam => self.steam,
+            ControllerFamily::EightBitDo => self.eightbitdo,
         }
     }
 
-    pub fn preference(self) -> ControllerPreference {
-        match self {
-            Self::DualSense => ControllerPreference::DualSense,
-            Self::Steam => ControllerPreference::Steam,
-        }
+    pub fn ordered(self) -> Vec<ControllerFamily> {
+        [
+            ControllerFamily::DualSense,
+            ControllerFamily::Steam,
+            ControllerFamily::EightBitDo,
+        ]
+        .into_iter()
+        .filter(|family| self.present(*family))
+        .collect()
     }
 }
 
 pub fn family_of_kind(kind: ControllerKind) -> ControllerFamily {
-    if kind.is_steam() {
-        ControllerFamily::Steam
-    } else {
-        ControllerFamily::DualSense
-    }
+    kind.family()
 }
 
 /// The family explicitly requested by a non-Auto preference.
@@ -85,17 +89,7 @@ pub fn requested_family(preference: ControllerPreference) -> Option<ControllerFa
         ControllerPreference::Auto => None,
         ControllerPreference::DualSense => Some(ControllerFamily::DualSense),
         ControllerPreference::Steam => Some(ControllerFamily::Steam),
-    }
-}
-
-pub fn family_present(
-    family: ControllerFamily,
-    dualsense_present: bool,
-    steam_present: bool,
-) -> bool {
-    match family {
-        ControllerFamily::DualSense => dualsense_present,
-        ControllerFamily::Steam => steam_present,
+        ControllerPreference::EightBitDo => Some(ControllerFamily::EightBitDo),
     }
 }
 
@@ -103,6 +97,8 @@ pub fn family_present(
 pub enum DeviceClass {
     Controller(ControllerFamily),
     SkippedSteamInterface,
+    SkippedEightBitDoReceiver,
+    SkippedEightBitDoModel,
     Unrelated,
 }
 
@@ -118,26 +114,34 @@ pub fn classify_device(vendor_id: u16, product_id: u16, interface_number: i32) -
             DeviceClass::SkippedSteamInterface
         };
     }
+    if eightbitdo::is_eightbitdo_vid(vendor_id) {
+        if eightbitdo::is_supported_pid(product_id) {
+            return DeviceClass::Controller(ControllerFamily::EightBitDo);
+        }
+        return if eightbitdo::is_receiver_pid(product_id) {
+            DeviceClass::SkippedEightBitDoReceiver
+        } else {
+            DeviceClass::SkippedEightBitDoModel
+        };
+    }
     DeviceClass::Unrelated
 }
 
-/// Resolve a target family from what is present. Auto uses DualSense first
-/// when both families are present; an explicit preference never substitutes
-/// the other family when its target is absent.
+/// Resolve a target family from what is present. Auto uses the family
+/// priority; an explicit preference never substitutes another family.
 pub fn select_family(
     preference: ControllerPreference,
-    dualsense_present: bool,
-    steam_present: bool,
+    presence: FamilyPresence,
 ) -> Option<ControllerFamily> {
     match preference {
-        ControllerPreference::Auto => match (dualsense_present, steam_present) {
-            (false, false) => None,
-            (true, false) => Some(ControllerFamily::DualSense),
-            (false, true) => Some(ControllerFamily::Steam),
-            (true, true) => Some(ControllerFamily::DualSense),
-        },
-        ControllerPreference::DualSense => dualsense_present.then_some(ControllerFamily::DualSense),
-        ControllerPreference::Steam => steam_present.then_some(ControllerFamily::Steam),
+        ControllerPreference::Auto => presence.ordered().into_iter().next(),
+        ControllerPreference::DualSense => {
+            presence.dualsense.then_some(ControllerFamily::DualSense)
+        }
+        ControllerPreference::Steam => presence.steam.then_some(ControllerFamily::Steam),
+        ControllerPreference::EightBitDo => {
+            presence.eightbitdo.then_some(ControllerFamily::EightBitDo)
+        }
     }
 }
 
@@ -146,10 +150,9 @@ pub fn select_family(
 pub fn switch_target(
     preference: ControllerPreference,
     current: Option<ControllerFamily>,
-    dualsense_present: bool,
-    steam_present: bool,
+    presence: FamilyPresence,
 ) -> Option<ControllerFamily> {
-    let target = select_family(preference, dualsense_present, steam_present)?;
+    let target = select_family(preference, presence)?;
     (current != Some(target)).then_some(target)
 }
 
@@ -236,6 +239,13 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
                         steam_controller::transport_for(entry.product_id, entry.interface_number)
                             .label()
                     }
+                    ControllerFamily::EightBitDo => {
+                        if entry.interface_number == -1 {
+                            "Bluetooth (experimental)".to_string()
+                        } else {
+                            "USB".to_string()
+                        }
+                    }
                 };
                 devices.push(DetectedDevice {
                     family,
@@ -262,13 +272,37 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
                     reason,
                 });
             }
+            DeviceClass::SkippedEightBitDoReceiver => {
+                skipped.push(SkippedDevice {
+                    vendor_id: entry.vendor_id,
+                    product_id: entry.product_id,
+                    interface_number: entry.interface_number,
+                    serial: entry.serial,
+                    path: entry.path,
+                    reason: eightbitdo::skip_reason(entry.product_id)
+                        .unwrap_or("unsupported 8BitDo device")
+                        .to_string(),
+                });
+            }
+            DeviceClass::SkippedEightBitDoModel => {
+                skipped.push(SkippedDevice {
+                    vendor_id: entry.vendor_id,
+                    product_id: entry.product_id,
+                    interface_number: entry.interface_number,
+                    serial: entry.serial,
+                    path: entry.path,
+                    reason: eightbitdo::skip_reason(entry.product_id)
+                        .unwrap_or("unsupported 8BitDo device")
+                        .to_string(),
+                });
+            }
             DeviceClass::Unrelated => {}
         }
     }
 
     devices.sort_by_key(|d| {
         (
-            d.family.is_steam(),
+            d.family.priority(),
             d.product_id,
             d.interface_number,
             d.path.clone(),
@@ -278,17 +312,17 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
     (devices, skipped)
 }
 
-static LAST_SKIPPED_STEAM_LOG: AtomicU64 = AtomicU64::new(0);
+static LAST_SKIPPED_DEVICE_LOG: AtomicU64 = AtomicU64::new(0);
 
-pub fn present_families(api: &HidApi, selector: Option<&str>) -> (bool, bool) {
+pub fn present_families(api: &HidApi, selector: Option<&str>) -> FamilyPresence {
     let (devices, skipped) = scan_devices(api);
 
     if !skipped.is_empty()
-        && crate::util::rate_limited_gate(&LAST_SKIPPED_STEAM_LOG, Duration::from_secs(60))
+        && crate::util::rate_limited_gate(&LAST_SKIPPED_DEVICE_LOG, Duration::from_secs(60))
     {
         for device in &skipped {
             eprintln!(
-                "[gyro4u] skipped Steam device {:04x}:{:04x} interface {} ({}): {}",
+                "[gyro4u] skipped device {:04x}:{:04x} interface {} ({}): {}",
                 device.vendor_id,
                 device.product_id,
                 device.interface_number,
@@ -302,19 +336,23 @@ pub fn present_families(api: &HidApi, selector: Option<&str>) -> (bool, bool) {
         None => true,
         Some(selector) => match device.family {
             ControllerFamily::DualSense => device.serial.as_deref() == Some(selector),
-            ControllerFamily::Steam => {
+            ControllerFamily::Steam | ControllerFamily::EightBitDo => {
                 device.serial.as_deref() == Some(selector) || device.path == selector
             }
         },
     };
 
-    let dualsense = devices
-        .iter()
-        .any(|d| d.family == ControllerFamily::DualSense && matches(d));
-    let steam = devices
-        .iter()
-        .any(|d| d.family == ControllerFamily::Steam && matches(d));
-    (dualsense, steam)
+    FamilyPresence {
+        dualsense: devices
+            .iter()
+            .any(|d| d.family == ControllerFamily::DualSense && matches(d)),
+        steam: devices
+            .iter()
+            .any(|d| d.family == ControllerFamily::Steam && matches(d)),
+        eightbitdo: devices
+            .iter()
+            .any(|d| d.family == ControllerFamily::EightBitDo && matches(d)),
+    }
 }
 
 /// A family-level view for the top-bar switcher. Steam puck/receiver slots
@@ -588,19 +626,38 @@ pub fn inventory_rows(
         });
     }
 
+    let eightbitdo: Vec<&DetectedDevice> = devices
+        .iter()
+        .filter(|device| device.family == ControllerFamily::EightBitDo)
+        .collect();
+    if let Some(chosen) = eightbitdo
+        .iter()
+        .find(|device| identity_matches(device, active_identity))
+        .or_else(|| eightbitdo.first())
+    {
+        rows.push(FamilyRow {
+            family: ControllerFamily::EightBitDo,
+            active: active_family == Some(ControllerFamily::EightBitDo),
+            live: true,
+            receiver_only: false,
+            transport: Some(chosen.transport.clone()),
+            identity: Some(chosen.identity.clone()),
+        });
+    }
+
     rows
 }
 
 fn no_controller_error(selector: Option<&str>) -> anyhow::Error {
     match selector {
         Some(selector) => anyhow!(
-            "No supported controller '{}' found. Connect a DualSense, DualSense Edge, or Steam \
-             Controller (2026) via USB, Bluetooth, or a puck/receiver.",
+            "No supported controller '{}' found. Connect a DualSense, DualSense Edge, Steam \
+             Controller (2026), or 8BitDo Pro 3 in D mode.",
             selector
         ),
         None => anyhow!(
-            "No supported controller found. Connect a DualSense, DualSense Edge, or Steam \
-             Controller (2026) via USB, Bluetooth, or a puck/receiver."
+            "No supported controller found. Connect a DualSense, DualSense Edge, Steam \
+             Controller (2026), or 8BitDo Pro 3 in D mode."
         ),
     }
 }
@@ -611,12 +668,12 @@ impl PhysicalController {
         selector: Option<&str>,
         preference: ControllerPreference,
     ) -> Result<Self> {
-        let (dualsense_present, steam_present) = present_families(api, selector);
-        let Some(preferred) = select_family(preference, dualsense_present, steam_present) else {
+        let presence = present_families(api, selector);
+        let Some(preferred) = select_family(preference, presence) else {
             if let Some(family) = requested_family(preference) {
                 return Err(anyhow!(
                     "No supported controller of the requested family ({}) found. Connect a {} \
-                     or choose Automatic (DualSense first).",
+                     or choose Automatic.",
                     family.label(),
                     family.label()
                 ));
@@ -624,23 +681,25 @@ impl PhysicalController {
             return Err(no_controller_error(selector));
         };
 
-        // Auto may fall back to the other family if opening the preferred one
-        // fails. An explicit preference must never silently substitute.
+        // Auto may fall back to the other families if opening the preferred
+        // one fails. An explicit preference must never silently substitute.
         let families: Vec<ControllerFamily> = match requested_family(preference) {
             Some(_) => vec![preferred],
-            None => vec![
-                preferred,
-                match preferred {
-                    ControllerFamily::DualSense => ControllerFamily::Steam,
-                    ControllerFamily::Steam => ControllerFamily::DualSense,
-                },
-            ],
+            None => {
+                let mut families = vec![preferred];
+                families.extend(
+                    presence
+                        .ordered()
+                        .into_iter()
+                        .filter(|family| *family != preferred),
+                );
+                families
+            }
         };
 
         let mut last_error = None;
         for family in families {
-            let present = family_present(family, dualsense_present, steam_present);
-            if !present {
+            if !presence.present(family) {
                 continue;
             }
             let opened = match family {
@@ -649,6 +708,9 @@ impl PhysicalController {
                 }
                 ControllerFamily::Steam => {
                     SteamController::new(api, selector).map(Self::from_steam)
+                }
+                ControllerFamily::EightBitDo => {
+                    EightBitDoPro3::new(api, selector).map(Self::from_eightbitdo)
                 }
             };
             match opened {
@@ -701,6 +763,26 @@ impl PhysicalController {
         }
     }
 
+    fn from_eightbitdo(device: EightBitDoPro3) -> Self {
+        let info = ControllerInfo {
+            serial: device.serial().to_string(),
+            identity: device.identity().to_string(),
+            vendor_id: device.vendor_id(),
+            product_id: device.product_id(),
+            kind: ControllerKind::EightBitDoPro3,
+            is_bluetooth: device.is_bluetooth(),
+            transport: if device.is_bluetooth() {
+                "Bluetooth (experimental)".to_string()
+            } else {
+                "USB".to_string()
+            },
+        };
+        Self {
+            inner: ControllerInner::EightBitDo(device),
+            info,
+        }
+    }
+
     pub fn info(&self) -> &ControllerInfo {
         &self.info
     }
@@ -747,6 +829,14 @@ impl PhysicalController {
                     disconnected: polled.disconnected,
                 }))
             }
+            ControllerInner::EightBitDo(device) => {
+                let polled = device.poll_latest_input()?;
+                Ok(polled.map(|polled| PolledInput {
+                    state: polled.state,
+                    battery: polled.battery,
+                    disconnected: false,
+                }))
+            }
         }
     }
 
@@ -754,6 +844,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.get_input_state(),
             ControllerInner::Steam(device) => device.get_input_state(),
+            ControllerInner::EightBitDo(device) => device.get_input_state(),
         }
     }
 
@@ -761,6 +852,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.get_battery(),
             ControllerInner::Steam(device) => device.get_battery(),
+            ControllerInner::EightBitDo(device) => device.get_battery(),
         }
     }
 
@@ -768,6 +860,7 @@ impl PhysicalController {
         match &self.inner {
             ControllerInner::DualSense(device) => device.get_firmware_info(),
             ControllerInner::Steam(device) => device.get_firmware_info(),
+            ControllerInner::EightBitDo(device) => device.get_firmware_info(),
         }
     }
 
@@ -783,6 +876,9 @@ impl PhysicalController {
             ControllerInner::Steam(_) => {
                 bail!("Firmware updates are not supported for the Steam Controller in gyro4u")
             }
+            ControllerInner::EightBitDo(_) => {
+                bail!("Firmware updates are not supported for the 8BitDo Pro 3 in gyro4u")
+            }
         }
     }
 
@@ -790,6 +886,7 @@ impl PhysicalController {
         match &self.inner {
             ControllerInner::DualSense(device) => device.set_update_mode(active),
             ControllerInner::Steam(device) => device.set_update_mode(active),
+            ControllerInner::EightBitDo(device) => device.set_update_mode(active),
         }
     }
 
@@ -797,6 +894,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(_) => Ok(()),
             ControllerInner::Steam(device) => device.set_motion(enabled),
+            ControllerInner::EightBitDo(device) => device.set_motion(enabled),
         }
     }
 
@@ -804,6 +902,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(_) => Ok(()),
             ControllerInner::Steam(device) => device.force_motion(enabled),
+            ControllerInner::EightBitDo(device) => device.force_motion(enabled),
         }
     }
 
@@ -823,6 +922,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_lightbar(r, g, b, brightness),
             ControllerInner::Steam(device) => device.set_lightbar(r, g, b, brightness),
+            ControllerInner::EightBitDo(device) => device.set_lightbar(r, g, b, brightness),
         }
     }
 
@@ -830,6 +930,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_lightbar_enabled(enabled),
             ControllerInner::Steam(device) => device.set_lightbar_enabled(enabled),
+            ControllerInner::EightBitDo(device) => device.set_lightbar_enabled(enabled),
         }
     }
 
@@ -837,6 +938,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_player_leds(leds),
             ControllerInner::Steam(device) => device.set_player_leds(leds),
+            ControllerInner::EightBitDo(device) => device.set_player_leds(leds),
         }
     }
 
@@ -844,6 +946,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_mic(enabled),
             ControllerInner::Steam(device) => device.set_mic(enabled),
+            ControllerInner::EightBitDo(device) => device.set_mic(enabled),
         }
     }
 
@@ -851,6 +954,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_mic_led(state),
             ControllerInner::Steam(device) => device.set_mic_led(state),
+            ControllerInner::EightBitDo(device) => device.set_mic_led(state),
         }
     }
 
@@ -862,6 +966,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_trigger_effects(left, right),
             ControllerInner::Steam(device) => device.set_trigger_effects(left, right),
+            ControllerInner::EightBitDo(device) => device.set_trigger_effects(left, right),
         }
     }
 
@@ -877,6 +982,9 @@ impl PhysicalController {
                 device.set_trigger_effect(left, right, mode, params)
             }
             ControllerInner::Steam(device) => device.set_trigger_effect(left, right, mode, params),
+            ControllerInner::EightBitDo(device) => {
+                device.set_trigger_effect(left, right, mode, params)
+            }
         }
     }
 
@@ -884,6 +992,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_trigger_off(),
             ControllerInner::Steam(device) => device.set_trigger_off(),
+            ControllerInner::EightBitDo(device) => device.set_trigger_off(),
         }
     }
 
@@ -891,6 +1000,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_vibration(rumble, trigger),
             ControllerInner::Steam(device) => device.set_vibration(rumble, trigger),
+            ControllerInner::EightBitDo(device) => device.set_vibration(rumble, trigger),
         }
     }
 
@@ -898,6 +1008,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_rumble(left, right),
             ControllerInner::Steam(device) => device.set_rumble(left, right),
+            ControllerInner::EightBitDo(device) => device.set_rumble(left, right),
         }
     }
 
@@ -905,6 +1016,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_haptics(samples),
             ControllerInner::Steam(device) => device.set_haptics(samples),
+            ControllerInner::EightBitDo(device) => device.set_haptics(samples),
         }
     }
 
@@ -919,6 +1031,9 @@ impl PhysicalController {
                 bail!("Steam Controller pad haptics are not supported on DualSense")
             }
             ControllerInner::Steam(device) => device.haptic_command(side, haptic, gain_db),
+            ControllerInner::EightBitDo(_) => {
+                bail!("Steam Controller pad haptics are not supported on the 8BitDo Pro 3")
+            }
         }
     }
 
@@ -926,6 +1041,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_speaker(mode),
             ControllerInner::Steam(device) => device.set_speaker(mode),
+            ControllerInner::EightBitDo(device) => device.set_speaker(mode),
         }
     }
 
@@ -933,6 +1049,7 @@ impl PhysicalController {
         match &mut self.inner {
             ControllerInner::DualSense(device) => device.set_volume(volume),
             ControllerInner::Steam(device) => device.set_volume(volume),
+            ControllerInner::EightBitDo(device) => device.set_volume(volume),
         }
     }
 }
@@ -947,7 +1064,9 @@ pub fn is_present(api: &HidApi, identity: &str) -> bool {
                 info.product_id(),
                 info.interface_number(),
             );
-        if !is_dualsense && !is_steam {
+        let is_eightbitdo = eightbitdo::is_eightbitdo_vid(info.vendor_id())
+            && eightbitdo::is_supported_pid(info.product_id());
+        if !is_dualsense && !is_steam && !is_eightbitdo {
             return false;
         }
         info.serial_number()
@@ -1006,15 +1125,29 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
     let steam = devices
         .iter()
         .any(|device| device.family == ControllerFamily::Steam);
+    let eightbitdo = devices
+        .iter()
+        .any(|device| device.family == ControllerFamily::EightBitDo);
+    let presence = FamilyPresence {
+        dualsense,
+        steam,
+        eightbitdo,
+    };
 
     out.push_str(&format!("Preference: {}\n", preference.label()));
-    match select_family(preference, dualsense, steam) {
+    match select_family(preference, presence) {
         Some(family) => out.push_str(&format!("Would connect: {}\n", family.label())),
         None => out.push_str("Would connect: nothing\n"),
     }
     if steam {
         out.push_str(
             "Note: puck/receiver slots are probed for a live controller at connect time.\n",
+        );
+    }
+    if eightbitdo {
+        out.push_str(
+            "Note: wired 8BitDo is supported; Bluetooth DInput is experimental, and the 2.4G \
+             receiver is not supported.\n",
         );
     }
     out
@@ -1024,10 +1157,18 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
 mod tests {
     use super::*;
 
+    fn presence(dualsense: bool, steam: bool, eightbitdo: bool) -> FamilyPresence {
+        FamilyPresence {
+            dualsense,
+            steam,
+            eightbitdo,
+        }
+    }
+
     #[test]
     fn auto_selects_steam_when_only_steam_present() {
         assert_eq!(
-            select_family(ControllerPreference::Auto, false, true),
+            select_family(ControllerPreference::Auto, presence(false, true, false)),
             Some(ControllerFamily::Steam)
         );
     }
@@ -1035,43 +1176,73 @@ mod tests {
     #[test]
     fn auto_selects_dualsense_when_only_dualsense_present() {
         assert_eq!(
-            select_family(ControllerPreference::Auto, true, false),
+            select_family(ControllerPreference::Auto, presence(true, false, false)),
             Some(ControllerFamily::DualSense)
         );
     }
 
     #[test]
-    fn auto_prefers_dualsense_when_both_present() {
+    fn auto_selects_eightbitdo_when_only_eightbitdo_present() {
         assert_eq!(
-            select_family(ControllerPreference::Auto, true, true),
-            Some(ControllerFamily::DualSense)
+            select_family(ControllerPreference::Auto, presence(false, false, true)),
+            Some(ControllerFamily::EightBitDo)
         );
     }
 
     #[test]
-    fn steam_preference_wins_when_both_present() {
+    fn auto_prefers_dualsense_then_steam() {
         assert_eq!(
-            select_family(ControllerPreference::Steam, true, true),
+            select_family(ControllerPreference::Auto, presence(true, true, true)),
+            Some(ControllerFamily::DualSense)
+        );
+        assert_eq!(
+            select_family(ControllerPreference::Auto, presence(false, true, true)),
             Some(ControllerFamily::Steam)
         );
     }
 
     #[test]
-    fn dualsense_preference_wins_when_both_present() {
+    fn steam_preference_wins_when_present() {
         assert_eq!(
-            select_family(ControllerPreference::DualSense, true, true),
+            select_family(ControllerPreference::Steam, presence(true, true, true)),
+            Some(ControllerFamily::Steam)
+        );
+    }
+
+    #[test]
+    fn dualsense_preference_wins_when_present() {
+        assert_eq!(
+            select_family(ControllerPreference::DualSense, presence(true, true, true)),
             Some(ControllerFamily::DualSense)
         );
     }
 
     #[test]
-    fn explicit_preference_does_not_substitute_the_other_family() {
+    fn eightbitdo_preference_wins_when_present() {
         assert_eq!(
-            select_family(ControllerPreference::Steam, true, false),
+            select_family(ControllerPreference::EightBitDo, presence(true, true, true)),
+            Some(ControllerFamily::EightBitDo)
+        );
+    }
+
+    #[test]
+    fn explicit_preference_does_not_substitute_another_family() {
+        assert_eq!(
+            select_family(ControllerPreference::Steam, presence(true, false, false)),
             None
         );
         assert_eq!(
-            select_family(ControllerPreference::DualSense, false, true),
+            select_family(
+                ControllerPreference::DualSense,
+                presence(false, true, false)
+            ),
+            None
+        );
+        assert_eq!(
+            select_family(
+                ControllerPreference::EightBitDo,
+                presence(true, true, false)
+            ),
             None
         );
     }
@@ -1082,8 +1253,7 @@ mod tests {
             switch_target(
                 ControllerPreference::Steam,
                 Some(ControllerFamily::DualSense),
-                true,
-                false
+                presence(true, false, false)
             ),
             None
         );
@@ -1095,19 +1265,17 @@ mod tests {
             switch_target(
                 ControllerPreference::Steam,
                 Some(ControllerFamily::DualSense),
-                true,
-                true
+                presence(true, true, true)
             ),
             Some(ControllerFamily::Steam)
         );
         assert_eq!(
             switch_target(
-                ControllerPreference::DualSense,
-                Some(ControllerFamily::Steam),
-                true,
-                true
+                ControllerPreference::EightBitDo,
+                Some(ControllerFamily::DualSense),
+                presence(true, true, true)
             ),
-            Some(ControllerFamily::DualSense)
+            Some(ControllerFamily::EightBitDo)
         );
     }
 
@@ -1117,8 +1285,7 @@ mod tests {
             switch_target(
                 ControllerPreference::Steam,
                 Some(ControllerFamily::Steam),
-                true,
-                true
+                presence(true, true, false)
             ),
             None
         );
@@ -1126,8 +1293,15 @@ mod tests {
             switch_target(
                 ControllerPreference::Auto,
                 Some(ControllerFamily::DualSense),
-                true,
-                true
+                presence(true, true, true)
+            ),
+            None
+        );
+        assert_eq!(
+            switch_target(
+                ControllerPreference::EightBitDo,
+                Some(ControllerFamily::EightBitDo),
+                presence(false, false, true)
             ),
             None
         );
@@ -1139,8 +1313,7 @@ mod tests {
             switch_target(
                 ControllerPreference::Auto,
                 Some(ControllerFamily::Steam),
-                true,
-                true
+                presence(true, true, true)
             ),
             Some(ControllerFamily::DualSense)
         );
@@ -1148,8 +1321,7 @@ mod tests {
             switch_target(
                 ControllerPreference::Auto,
                 Some(ControllerFamily::DualSense),
-                true,
-                true
+                presence(true, true, true)
             ),
             None
         );
@@ -1166,10 +1338,14 @@ mod tests {
             requested_family(ControllerPreference::Steam),
             Some(ControllerFamily::Steam)
         );
+        assert_eq!(
+            requested_family(ControllerPreference::EightBitDo),
+            Some(ControllerFamily::EightBitDo)
+        );
     }
 
     #[test]
-    fn family_of_kind_maps_edge_to_dualsense_family() {
+    fn family_of_kind_maps_edge_and_pro3() {
         assert_eq!(
             family_of_kind(ControllerKind::DualSenseEdge),
             ControllerFamily::DualSense
@@ -1177,6 +1353,10 @@ mod tests {
         assert_eq!(
             family_of_kind(ControllerKind::SteamController),
             ControllerFamily::Steam
+        );
+        assert_eq!(
+            family_of_kind(ControllerKind::EightBitDoPro3),
+            ControllerFamily::EightBitDo
         );
     }
 
@@ -1186,8 +1366,12 @@ mod tests {
             ControllerPreference::Auto,
             ControllerPreference::DualSense,
             ControllerPreference::Steam,
+            ControllerPreference::EightBitDo,
         ] {
-            assert_eq!(select_family(preference, false, false), None);
+            assert_eq!(
+                select_family(preference, presence(false, false, false)),
+                None
+            );
         }
     }
 
@@ -1220,6 +1404,34 @@ mod tests {
             }
         }
         assert_eq!(classify_device(0x1234, 0x5678, 0), DeviceClass::Unrelated);
+    }
+
+    #[test]
+    fn eightbitdo_pro3_is_supported_but_receivers_and_other_models_are_skipped() {
+        use crate::eightbitdo::{
+            EIGHTBITDO_PRO3_PID, EIGHTBITDO_RECEIVER_DOCKED_PID, EIGHTBITDO_RECEIVER_XINPUT_PID,
+            EIGHTBITDO_VID,
+        };
+
+        for interface in [-1, 0] {
+            assert_eq!(
+                classify_device(EIGHTBITDO_VID, EIGHTBITDO_PRO3_PID, interface),
+                DeviceClass::Controller(ControllerFamily::EightBitDo)
+            );
+        }
+        for pid in [
+            EIGHTBITDO_RECEIVER_DOCKED_PID,
+            EIGHTBITDO_RECEIVER_XINPUT_PID,
+        ] {
+            assert_eq!(
+                classify_device(EIGHTBITDO_VID, pid, 0),
+                DeviceClass::SkippedEightBitDoReceiver
+            );
+        }
+        assert_eq!(
+            classify_device(EIGHTBITDO_VID, 0x1234, 0),
+            DeviceClass::SkippedEightBitDoModel
+        );
     }
 
     fn hid_entry(interface_number: i32, path: &str, serial: Option<&str>) -> HidEntry {
@@ -1270,6 +1482,7 @@ mod tests {
             vendor_id: match family {
                 ControllerFamily::DualSense => DS_VID,
                 ControllerFamily::Steam => crate::steam_controller::STEAM_VID,
+                ControllerFamily::EightBitDo => crate::eightbitdo::EIGHTBITDO_VID,
             },
             product_id,
             interface_number,
@@ -1480,6 +1693,30 @@ mod tests {
         assert!(rows[0].live);
         assert!(!rows[0].receiver_only);
         assert_eq!(rows[0].transport.as_deref(), Some("USB"));
+    }
+
+    #[test]
+    fn eightbitdo_pro3_adds_a_live_family_row() {
+        let pad = detected(
+            ControllerFamily::EightBitDo,
+            crate::eightbitdo::EIGHTBITDO_PRO3_PID,
+            0,
+            Some("E8BDO-SERIAL"),
+            "/dev/hidraw7",
+        );
+
+        let rows = inventory_rows(
+            &[pad],
+            Some(ControllerFamily::EightBitDo),
+            Some("E8BDO-SERIAL"),
+            None,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].family, ControllerFamily::EightBitDo);
+        assert!(rows[0].active && rows[0].live);
+        assert_eq!(rows[0].transport.as_deref(), Some("USB"));
+        assert_eq!(rows[0].identity.as_deref(), Some("E8BDO-SERIAL"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod common;
 mod controller;
 mod daemon;
 mod dualsense;
+mod eightbitdo;
 mod firmware;
 mod firmware_controller;
 mod gyro;

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::settings::ControllerPreference;
+
 pub const TOUCHPAD_MAX_X: u16 = 1920;
 pub const TOUCHPAD_MAX_Y: u16 = 1080;
 pub const STEAM_PAD_RANGE: f32 = 65536.0;
@@ -49,6 +51,10 @@ pub const EXTRA_BTN_LEFT_PAD: u32 = 1 << 12;
 pub const EXTRA_BTN_RIGHT_PAD: u32 = 1 << 13;
 pub const EXTRA_BTN_LEFT_TRIGGER_CLICK: u32 = 1 << 14;
 pub const EXTRA_BTN_RIGHT_TRIGGER_CLICK: u32 = 1 << 15;
+pub const EXTRA_BTN_EIGHTBITDO_L4: u32 = 1 << 16;
+pub const EXTRA_BTN_EIGHTBITDO_R4: u32 = 1 << 17;
+pub const EXTRA_BTN_EIGHTBITDO_PL: u32 = 1 << 18;
+pub const EXTRA_BTN_EIGHTBITDO_PR: u32 = 1 << 19;
 
 pub const DS_GYRO_COUNTS_PER_DPS: f32 = 16.0;
 pub const DS_ACCEL_COUNTS_PER_G: f32 = 8192.0;
@@ -152,11 +158,70 @@ impl Default for ControllerState {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Debug, Default)]
+pub enum AbxyLayout {
+    #[default]
+    Xbox,
+    Switch,
+}
+
+impl AbxyLayout {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Xbox => "Xbox",
+            Self::Switch => "Switch",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Debug, Default)]
+pub enum ControllerFamily {
+    #[default]
+    DualSense,
+    Steam,
+    EightBitDo,
+}
+
+impl ControllerFamily {
+    pub fn is_steam(self) -> bool {
+        matches!(self, Self::Steam)
+    }
+
+    pub fn is_eightbitdo(self) -> bool {
+        matches!(self, Self::EightBitDo)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DualSense => "DualSense",
+            Self::Steam => "Steam Controller",
+            Self::EightBitDo => "8BitDo",
+        }
+    }
+
+    pub fn preference(self) -> ControllerPreference {
+        match self {
+            Self::DualSense => ControllerPreference::DualSense,
+            Self::Steam => ControllerPreference::Steam,
+            Self::EightBitDo => ControllerPreference::EightBitDo,
+        }
+    }
+
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::DualSense => 0,
+            Self::Steam => 1,
+            Self::EightBitDo => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Debug, Default)]
 pub enum ControllerKind {
     #[default]
     DualSense,
     DualSenseEdge,
     SteamController,
+    EightBitDoPro3,
 }
 
 impl ControllerKind {
@@ -165,24 +230,37 @@ impl ControllerKind {
             Self::DualSense => "DualSense",
             Self::DualSenseEdge => "DualSense Edge",
             Self::SteamController => "Steam Controller (2026)",
+            Self::EightBitDoPro3 => "8BitDo Pro 3",
+        }
+    }
+
+    pub fn family(self) -> ControllerFamily {
+        match self {
+            Self::DualSense | Self::DualSenseEdge => ControllerFamily::DualSense,
+            Self::SteamController => ControllerFamily::Steam,
+            Self::EightBitDoPro3 => ControllerFamily::EightBitDo,
         }
     }
 
     pub fn is_steam(self) -> bool {
-        self == Self::SteamController
+        self.family().is_steam()
+    }
+
+    pub fn is_eightbitdo(self) -> bool {
+        self.family().is_eightbitdo()
     }
 
     pub fn target_buttons(self) -> &'static [Button] {
-        if self.is_steam() {
-            &STEAM_TARGETS
-        } else {
-            &GAMEPAD_TARGETS
+        match self.family() {
+            ControllerFamily::Steam => &STEAM_TARGETS,
+            ControllerFamily::EightBitDo => &EIGHTBITDO_TARGETS,
+            ControllerFamily::DualSense => &GAMEPAD_TARGETS,
         }
     }
 
     pub fn capabilities(self) -> ControllerCapabilities {
-        if self.is_steam() {
-            ControllerCapabilities {
+        match self.family() {
+            ControllerFamily::Steam => ControllerCapabilities {
                 kind: self,
                 lightbar: false,
                 player_leds: false,
@@ -190,12 +268,25 @@ impl ControllerKind {
                 adaptive_triggers: false,
                 haptics: false,
                 trackpad_haptics: true,
+                rumble: false,
                 firmware: false,
                 motion: true,
                 touchpad: TouchpadKind::DualCircular,
-            }
-        } else {
-            ControllerCapabilities {
+            },
+            ControllerFamily::EightBitDo => ControllerCapabilities {
+                kind: self,
+                lightbar: false,
+                player_leds: false,
+                microphone: false,
+                adaptive_triggers: false,
+                haptics: false,
+                trackpad_haptics: false,
+                rumble: true,
+                firmware: false,
+                motion: true,
+                touchpad: TouchpadKind::None,
+            },
+            ControllerFamily::DualSense => ControllerCapabilities {
                 kind: self,
                 lightbar: true,
                 player_leds: true,
@@ -203,10 +294,11 @@ impl ControllerKind {
                 adaptive_triggers: true,
                 haptics: true,
                 trackpad_haptics: false,
+                rumble: true,
                 firmware: true,
                 motion: true,
                 touchpad: TouchpadKind::DualSensePanel,
-            }
+            },
         }
     }
 }
@@ -215,6 +307,7 @@ impl ControllerKind {
 pub enum TouchpadKind {
     DualSensePanel,
     DualCircular,
+    None,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +319,7 @@ pub struct ControllerCapabilities {
     pub adaptive_triggers: bool,
     pub haptics: bool,
     pub trackpad_haptics: bool,
+    pub rumble: bool,
     pub firmware: bool,
     pub motion: bool,
     pub touchpad: TouchpadKind,
@@ -281,6 +375,10 @@ pub enum Button {
     RightPad,
     LeftTriggerClick,
     RightTriggerClick,
+    EightBitDoL4,
+    EightBitDoR4,
+    EightBitDoPL,
+    EightBitDoPR,
 }
 
 pub const GAMEPAD_TARGETS: [Button; 23] = [
@@ -342,7 +440,31 @@ pub const STEAM_TARGETS: [Button; 30] = [
     Button::RightPadTouch,
 ];
 
-pub const ALL_BUTTONS: [Button; 47] = [
+pub const EIGHTBITDO_TARGETS: [Button; 21] = [
+    Button::Cross,
+    Button::Circle,
+    Button::Square,
+    Button::Triangle,
+    Button::DPadUp,
+    Button::DPadRight,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::L3,
+    Button::R3,
+    Button::Create,
+    Button::Options,
+    Button::PS,
+    Button::EightBitDoL4,
+    Button::EightBitDoR4,
+    Button::EightBitDoPL,
+    Button::EightBitDoPR,
+];
+
+pub const ALL_BUTTONS: [Button; 51] = [
     Button::Cross,
     Button::Circle,
     Button::Square,
@@ -390,6 +512,10 @@ pub const ALL_BUTTONS: [Button; 47] = [
     Button::RightPad,
     Button::LeftTriggerClick,
     Button::RightTriggerClick,
+    Button::EightBitDoL4,
+    Button::EightBitDoR4,
+    Button::EightBitDoPL,
+    Button::EightBitDoPR,
 ];
 
 impl Button {
@@ -475,7 +601,11 @@ impl Button {
             | Button::LeftPad
             | Button::RightPad
             | Button::LeftTriggerClick
-            | Button::RightTriggerClick => None,
+            | Button::RightTriggerClick
+            | Button::EightBitDoL4
+            | Button::EightBitDoR4
+            | Button::EightBitDoPL
+            | Button::EightBitDoPR => None,
         }
     }
 
@@ -497,6 +627,10 @@ impl Button {
             Button::RightPad => Some(EXTRA_BTN_RIGHT_PAD),
             Button::LeftTriggerClick => Some(EXTRA_BTN_LEFT_TRIGGER_CLICK),
             Button::RightTriggerClick => Some(EXTRA_BTN_RIGHT_TRIGGER_CLICK),
+            Button::EightBitDoL4 => Some(EXTRA_BTN_EIGHTBITDO_L4),
+            Button::EightBitDoR4 => Some(EXTRA_BTN_EIGHTBITDO_R4),
+            Button::EightBitDoPL => Some(EXTRA_BTN_EIGHTBITDO_PL),
+            Button::EightBitDoPR => Some(EXTRA_BTN_EIGHTBITDO_PR),
             _ => None,
         }
     }
@@ -582,23 +716,51 @@ impl Button {
             Button::RightPad => "Right Pad Click",
             Button::LeftTriggerClick => "Left Trigger Click",
             Button::RightTriggerClick => "Right Trigger Click",
+            Button::EightBitDoL4 => "L4",
+            Button::EightBitDoR4 => "R4",
+            Button::EightBitDoPL => "PL",
+            Button::EightBitDoPR => "PR",
         }
     }
 
     pub fn device_label(self, kind: ControllerKind) -> &'static str {
-        if !kind.is_steam() {
-            return self.label();
-        }
-        match self {
-            Button::Cross => "A",
-            Button::Circle => "B",
-            Button::Square => "X",
-            Button::Triangle => "Y",
-            Button::Create => "View",
-            Button::Options => "Menu",
-            Button::Touchpad => "Left Pad Click",
-            Button::Mute => "Right Pad Click",
-            _ => self.label(),
+        self.device_label_with_layout(kind, AbxyLayout::Xbox)
+    }
+
+    pub fn device_label_with_layout(
+        self,
+        kind: ControllerKind,
+        layout: AbxyLayout,
+    ) -> &'static str {
+        match kind.family() {
+            ControllerFamily::DualSense => self.label(),
+            ControllerFamily::Steam => match self {
+                Button::Cross => "A",
+                Button::Circle => "B",
+                Button::Square => "X",
+                Button::Triangle => "Y",
+                Button::Create => "View",
+                Button::Options => "Menu",
+                Button::Touchpad => "Left Pad Click",
+                Button::Mute => "Right Pad Click",
+                _ => self.label(),
+            },
+            ControllerFamily::EightBitDo => match self {
+                Button::Cross => match layout {
+                    AbxyLayout::Xbox => "A",
+                    AbxyLayout::Switch => "B",
+                },
+                Button::Circle => match layout {
+                    AbxyLayout::Xbox => "B",
+                    AbxyLayout::Switch => "A",
+                },
+                Button::Square => "X",
+                Button::Triangle => "Y",
+                Button::Create => "Select",
+                Button::Options => "Start",
+                Button::PS => "Home",
+                _ => self.label(),
+            },
         }
     }
 }
@@ -617,6 +779,7 @@ mod tests {
         assert!(!steam.adaptive_triggers);
         assert!(!steam.haptics);
         assert!(steam.trackpad_haptics);
+        assert!(!steam.rumble);
         assert!(!steam.firmware);
         assert!(steam.motion);
         assert_eq!(steam.touchpad, TouchpadKind::DualCircular);
@@ -627,8 +790,53 @@ mod tests {
             assert!(sony.adaptive_triggers);
             assert!(sony.haptics);
             assert!(!sony.trackpad_haptics);
+            assert!(sony.rumble);
             assert!(sony.firmware);
             assert_eq!(sony.touchpad, TouchpadKind::DualSensePanel);
+        }
+    }
+
+    #[test]
+    fn eightbitdo_capabilities_are_rumble_and_motion_only() {
+        let pad = ControllerKind::EightBitDoPro3.capabilities();
+        assert!(!pad.lightbar);
+        assert!(!pad.player_leds);
+        assert!(!pad.microphone);
+        assert!(!pad.adaptive_triggers);
+        assert!(!pad.haptics);
+        assert!(!pad.trackpad_haptics);
+        assert!(pad.rumble);
+        assert!(!pad.firmware);
+        assert!(pad.motion);
+        assert_eq!(pad.touchpad, TouchpadKind::None);
+        assert_eq!(
+            ControllerKind::EightBitDoPro3.family(),
+            ControllerFamily::EightBitDo
+        );
+    }
+
+    #[test]
+    fn eightbitdo_targets_exclude_sony_and_steam_controls() {
+        let targets = ControllerKind::EightBitDoPro3.target_buttons();
+        for button in [
+            Button::EightBitDoL4,
+            Button::EightBitDoR4,
+            Button::EightBitDoPL,
+            Button::EightBitDoPR,
+            Button::PS,
+        ] {
+            assert!(targets.contains(&button));
+        }
+        for button in [
+            Button::Mute,
+            Button::Touchpad,
+            Button::EdgeFnLeft,
+            Button::EdgePaddleLeft,
+            Button::Steam,
+            Button::LeftPad,
+            Button::L4,
+        ] {
+            assert!(!targets.contains(&button));
         }
     }
 
@@ -658,7 +866,85 @@ mod tests {
                 assert!(button.to_bitmask().is_none());
             }
         }
-        assert_eq!(masks.len(), 16);
+        assert_eq!(masks.len(), 20);
+    }
+
+    #[test]
+    fn eightbitdo_face_labels_follow_abxy_layout() {
+        let kind = ControllerKind::EightBitDoPro3;
+        for (layout, cross, circle) in
+            [(AbxyLayout::Xbox, "A", "B"), (AbxyLayout::Switch, "B", "A")]
+        {
+            assert_eq!(
+                Button::Cross.device_label_with_layout(kind, layout),
+                cross,
+                "Cross in {layout:?}"
+            );
+            assert_eq!(
+                Button::Circle.device_label_with_layout(kind, layout),
+                circle,
+                "Circle in {layout:?}"
+            );
+            assert_eq!(Button::Square.device_label_with_layout(kind, layout), "X");
+            assert_eq!(Button::Triangle.device_label_with_layout(kind, layout), "Y");
+        }
+    }
+
+    #[test]
+    fn eightbitdo_meta_labels_are_select_and_start() {
+        let kind = ControllerKind::EightBitDoPro3;
+        for layout in [AbxyLayout::Xbox, AbxyLayout::Switch] {
+            assert_eq!(
+                Button::Create.device_label_with_layout(kind, layout),
+                "Select"
+            );
+            assert_eq!(
+                Button::Options.device_label_with_layout(kind, layout),
+                "Start"
+            );
+            assert_eq!(Button::PS.device_label_with_layout(kind, layout), "Home");
+        }
+        assert_eq!(Button::Create.device_label(kind), "Select");
+        assert_eq!(Button::Options.device_label(kind), "Start");
+    }
+
+    #[test]
+    fn device_label_defaults_to_xbox_layout_for_eightbitdo() {
+        assert_eq!(AbxyLayout::default(), AbxyLayout::Xbox);
+        let kind = ControllerKind::EightBitDoPro3;
+        for button in [
+            Button::Cross,
+            Button::Circle,
+            Button::Square,
+            Button::Triangle,
+        ] {
+            assert_eq!(
+                button.device_label(kind),
+                button.device_label_with_layout(kind, AbxyLayout::Xbox)
+            );
+        }
+    }
+
+    #[test]
+    fn dualsense_and_steam_labels_ignore_abxy_layout() {
+        for layout in [AbxyLayout::Xbox, AbxyLayout::Switch] {
+            assert_eq!(
+                Button::Cross.device_label_with_layout(ControllerKind::DualSense, layout),
+                "Cross"
+            );
+            assert_eq!(
+                Button::Create.device_label_with_layout(ControllerKind::DualSense, layout),
+                "Create"
+            );
+            assert_eq!(
+                Button::Circle.device_label_with_layout(ControllerKind::SteamController, layout),
+                "B"
+            );
+            assert_eq!(
+                Button::Options.device_label_with_layout(ControllerKind::SteamController, layout),
+                "Menu"
+            );
+        }
     }
 
     #[test]

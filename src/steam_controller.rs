@@ -1216,9 +1216,21 @@ mod tests {
         let steam_buttons: Vec<Button> = ALL_BUTTONS
             .iter()
             .copied()
-            .filter(|b| b.to_extra_mask().is_some())
+            .filter(|b| {
+                b.to_extra_mask()
+                    .is_some_and(|mask| mask <= crate::inputs::EXTRA_BTN_RIGHT_TRIGGER_CLICK)
+            })
             .collect();
         assert_eq!(steam_buttons.len(), 16);
+        // The global extra space also holds 8BitDo buttons, which Steam reports
+        // cannot produce.
+        assert_eq!(
+            ALL_BUTTONS
+                .iter()
+                .filter(|b| b.to_extra_mask().is_some())
+                .count(),
+            20
+        );
         for button in steam_buttons {
             let mask = button.to_extra_mask().unwrap();
             // Toggle every raw bit and check that the decoded state exposes

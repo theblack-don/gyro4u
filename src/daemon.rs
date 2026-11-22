@@ -250,7 +250,7 @@ fn reassert_motion(state: &Arc<DaemonState>) {
 }
 
 fn profile_matches_device(profile_device: ControllerKind, connected: ControllerKind) -> bool {
-    profile_device.is_steam() == connected.is_steam()
+    profile_device.family() == connected.family()
 }
 
 /// Keep the client-provided family when no controller is connected; reject an
@@ -290,7 +290,7 @@ fn load_profile_for_kind(
     }
     let remembered = SettingsManager::new()
         .load()
-        .remembered_profile(kind.is_steam())
+        .remembered_profile(kind.family())
         .to_string();
     if remembered != preferred_name && manager.profile_exists(&remembered) {
         return matches(&remembered);
@@ -355,7 +355,7 @@ fn switch_profile(state: &Arc<DaemonState>, name: &str) -> String {
     wlock(&state.inner).active_profile_name = loaded.clone();
     let sm = SettingsManager::new();
     let mut settings = sm.load();
-    settings.remember_profile(kind.is_steam(), &loaded);
+    settings.remember_profile(kind.family(), &loaded);
     sm.save(&settings);
     {
         let (color, leds, mic) = {
@@ -442,7 +442,9 @@ pub fn run_daemon() {
     {
         let sm = SettingsManager::new();
         let settings = sm.load();
-        let name = settings.remembered_profile(false).to_string();
+        let name = settings
+            .remembered_profile(controller::ControllerFamily::DualSense)
+            .to_string();
         let loaded = apply_profile_to_state(&state, &name);
         wlock(&state.inner).active_profile_name = loaded.clone();
         println!("{} profile '{}' loaded", TAG, loaded);
@@ -800,12 +802,15 @@ fn gamepad_loop(state: Arc<DaemonState>) {
         let (transform, touchpad_allowed) = {
             let inner = rlock(&state.inner);
             let kind = *rlock(&state.device_kind);
-            let touchpad_allowed = kind.is_steam()
+            let touchpad_allowed = !matches!(
+                kind.capabilities().touchpad,
+                crate::inputs::TouchpadKind::None
+            ) && (kind.is_steam()
                 || (state.touchpad_owned.get()
                     && matches!(
                         state.touchpad_mode.get(),
                         TouchpadMode::Disabled | TouchpadMode::GesturesOnly
-                    ));
+                    )));
             (inner.active_transform.clone(), touchpad_allowed)
         };
 
@@ -992,7 +997,7 @@ fn activate_controller(
     *wlock(&state.device_kind) = info.kind;
     let remembered = SettingsManager::new()
         .load()
-        .remembered_profile(info.kind.is_steam())
+        .remembered_profile(info.kind.family())
         .to_string();
     let loaded = apply_profile_to_state(state, &remembered);
     wlock(&state.inner).active_profile_name = loaded;
@@ -1071,18 +1076,10 @@ fn device_connection_loop(state: Arc<DaemonState>) {
 
             match HidApi::new() {
                 Ok(api) => {
-                    let (dualsense_present, steam_present) =
-                        controller::present_families(&api, None);
-                    let current_family = dev
-                        .as_ref()
-                        .map(|device| controller::family_of_kind(device.kind()));
+                    let presence = controller::present_families(&api, None);
+                    let current_family = dev.as_ref().map(|device| device.kind().family());
                     let target = controller::requested_family(preference).or_else(|| {
-                        controller::switch_target(
-                            preference,
-                            current_family,
-                            dualsense_present,
-                            steam_present,
-                        )
+                        controller::switch_target(preference, current_family, presence)
                     });
 
                     if let Some(target) = target
@@ -1571,6 +1568,45 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 let pm = ProfileManager::new();
                 match pm.delete_profile(&name) {
                     Ok(_) => send(&mut writer, DaemonResponse::Ok),
+                    Err(e) => send(
+                        &mut writer,
+                        DaemonResponse::Error {
+                            message: e.to_string(),
+                        },
+                    ),
+                }
+            }
+
+            DaemonCommand::RenameProfile { old, new } => {
+                let pm = ProfileManager::new();
+                match pm.load_profile(&old) {
+                    Ok(profile) => {
+                        let family = profile.device.family();
+                        match pm.rename_profile(&old, &new) {
+                            Ok(()) => {
+                                {
+                                    let mut inner = wlock(&state.inner);
+                                    if inner.active_profile_name == old {
+                                        inner.active_profile_name = new.clone();
+                                    }
+                                }
+                                let sm = SettingsManager::new();
+                                let mut settings = sm.load();
+                                if settings.remembered_profile(family) == old.as_str() {
+                                    settings.remember_profile(family, &new);
+                                    sm.save(&settings);
+                                }
+                                println!("{} renamed profile '{}' to '{}'", TAG, old, new);
+                                send(&mut writer, DaemonResponse::Ok);
+                            }
+                            Err(e) => send(
+                                &mut writer,
+                                DaemonResponse::Error {
+                                    message: e.to_string(),
+                                },
+                            ),
+                        }
+                    }
                     Err(e) => send(
                         &mut writer,
                         DaemonResponse::Error {
@@ -2108,6 +2144,26 @@ mod tests {
         )
         .expect("same family save allowed");
         assert_eq!(saved.device, ControllerKind::DualSenseEdge);
+    }
+
+    #[test]
+    fn save_rejects_eightbitdo_profile_on_sony_controller() {
+        let error = match prepare_profile_for_save(
+            profile(ControllerKind::EightBitDoPro3),
+            Some(ControllerKind::DualSense),
+        ) {
+            Ok(_) => panic!("mismatch must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("8BitDo Pro 3"));
+        assert!(error.contains("DualSense"));
+
+        let saved = prepare_profile_for_save(
+            profile(ControllerKind::EightBitDoPro3),
+            Some(ControllerKind::EightBitDoPro3),
+        )
+        .expect("matching 8BitDo save allowed");
+        assert_eq!(saved.device, ControllerKind::EightBitDoPro3);
     }
 
     fn steam_slot(slot: i32) -> controller::SteamLiveSlot {

@@ -95,6 +95,9 @@ pub(crate) struct DS4UApp {
     pub(crate) profile_edit_name: String,
     pub(crate) profile_create_error: String,
     pub(crate) profile_convert_offer: Option<String>,
+    pub(crate) profile_rename_from: Option<String>,
+    pub(crate) profile_rename_name: String,
+    pub(crate) profile_delete_confirm: Option<String>,
 
     daemon_manager: DaemonManager,
 
@@ -174,6 +177,9 @@ impl DS4UApp {
             profile_edit_name: String::new(),
             profile_create_error: String::new(),
             profile_convert_offer: None,
+            profile_rename_from: None,
+            profile_rename_name: String::new(),
+            profile_delete_confirm: None,
 
             daemon_manager: DaemonManager::new(),
 
@@ -429,7 +435,14 @@ impl DS4UApp {
     }
 
     pub(crate) fn current_family(&self) -> Option<ControllerFamily> {
-        self.controller_kind.map(controller::family_of_kind)
+        self.controller_kind.map(ControllerKind::family)
+    }
+    fn inventory_presence(&self) -> controller::FamilyPresence {
+        controller::FamilyPresence {
+            dualsense: self.inventory_has(ControllerFamily::DualSense),
+            steam: self.inventory_has(ControllerFamily::Steam),
+            eightbitdo: self.inventory_has(ControllerFamily::EightBitDo),
+        }
     }
     fn inventory_has(&self, family: ControllerFamily) -> bool {
         self.controller_inventory
@@ -547,10 +560,7 @@ impl DS4UApp {
         if current.is_some_and(|profile| profile.matches_device(kind)) {
             return;
         }
-        let remembered = self
-            .settings
-            .remembered_profile(kind.is_steam())
-            .to_string();
+        let remembered = self.settings.remembered_profile(kind.family()).to_string();
         let loaded = if self.profile_manager.profile_exists(&remembered) {
             self.profile_manager
                 .load_profile(&remembered)
@@ -664,12 +674,7 @@ impl DS4UApp {
         };
         let preference = self.settings.controller_preference;
         let target = controller::requested_family(preference).or_else(|| {
-            controller::switch_target(
-                preference,
-                Some(current),
-                self.inventory_has(ControllerFamily::DualSense),
-                self.inventory_has(ControllerFamily::Steam),
-            )
+            controller::switch_target(preference, Some(current), self.inventory_presence())
         });
         let Some(target) = target else {
             return;
@@ -761,7 +766,7 @@ impl DS4UApp {
         if let Some(ref ipc) = self.ipc.clone() {
             match mlock(ipc).get_battery() {
                 Ok(info) => self.battery_info = Some(info),
-                Err(_) if self.controller_kind.is_some() && !self.is_steam() => {
+                Err(_) if self.capabilities().is_some_and(|caps| caps.firmware) => {
                     self.stop_input_polling();
                     self.disconnect_controller();
                 }
@@ -779,7 +784,7 @@ impl DS4UApp {
 
         match ctrl.get_battery() {
             Ok(info) => self.battery_info = Some(info),
-            Err(_) if !self.is_steam() => {
+            Err(_) if self.capabilities().is_some_and(|caps| caps.firmware) => {
                 drop(ctrl);
                 self.disconnect_controller();
             }
@@ -849,9 +854,14 @@ impl DS4UApp {
     }
 
     pub(crate) fn start_raw_haptics(&mut self) {
-        if self.is_steam() {
-            self.error_message =
-                "Raw haptics are not implemented for the Steam Controller yet".to_string();
+        if !self.capabilities().is_some_and(|caps| caps.haptics) {
+            self.error_message = match self.controller_kind {
+                Some(kind) if kind.is_eightbitdo() => {
+                    "Raw haptics are not supported on the 8BitDo Pro 3; use the rumble test"
+                        .to_string()
+                }
+                _ => "Raw haptics are not implemented for this controller".to_string(),
+            };
             return;
         }
         let pattern = self.haptic_state.pattern;
@@ -913,9 +923,13 @@ impl DS4UApp {
     }
 
     fn acquire_direct_fw(&mut self) -> bool {
-        if self.is_steam() {
-            self.error_message =
-                "Firmware updates are not supported for the Steam Controller".to_string();
+        if !self.capabilities().is_some_and(|caps| caps.firmware) {
+            self.error_message = format!(
+                "Firmware updates are not supported for {}",
+                self.controller_kind
+                    .map(ControllerKind::label)
+                    .unwrap_or("this controller")
+            );
             return false;
         }
         if self.controller.is_some() {
@@ -953,6 +967,18 @@ impl DS4UApp {
         self.capabilities().is_some_and(|caps| {
             caps.kind.is_steam() && caps.touchpad == crate::inputs::TouchpadKind::DualCircular
         })
+    }
+
+    pub(crate) fn is_eightbitdo(&self) -> bool {
+        self.capabilities()
+            .is_some_and(|caps| caps.kind.is_eightbitdo())
+    }
+
+    pub(crate) fn abxy_layout(&self) -> crate::inputs::AbxyLayout {
+        self.current_profile
+            .as_ref()
+            .map(|profile| profile.eightbitdo_abxy_layout)
+            .unwrap_or_default()
     }
 
     pub(crate) fn apply_lightbar(&mut self) {
@@ -1010,7 +1036,7 @@ impl DS4UApp {
     }
 
     pub(crate) fn apply_vibration(&mut self) {
-        if !self.capabilities().is_some_and(|caps| caps.haptics) {
+        if !self.capabilities().is_some_and(|caps| caps.rumble) {
             return;
         }
         if let Some(be) = self.backend() {
@@ -1019,7 +1045,7 @@ impl DS4UApp {
     }
 
     pub(crate) fn test_rumble(&self, amp_l: u8, amp_r: u8, duration_ms: u64) {
-        if !self.capabilities().is_some_and(|caps| caps.haptics) {
+        if !self.capabilities().is_some_and(|caps| caps.rumble) {
             return;
         }
         let ctrl = self.controller.clone();
@@ -1128,7 +1154,7 @@ impl DS4UApp {
         self.current_profile = Some(profile.clone());
 
         self.settings
-            .remember_profile(profile.device.is_steam(), &profile.name);
+            .remember_profile(profile.device.family(), &profile.name);
         self.settings_manager.save(&self.settings);
 
         self.apply_lightbar();
@@ -1431,7 +1457,7 @@ impl DS4UApp {
             return;
         }
 
-        if self.is_steam() {
+        if !self.capabilities().is_some_and(|caps| caps.firmware) {
             return;
         }
         let Some(pid) = self.controller_product_id else {
@@ -1457,9 +1483,12 @@ impl DS4UApp {
     }
 
     pub(crate) fn refresh_firmware_info(&mut self) {
-        let result = if self.is_steam() {
+        let result = if !self.capabilities().is_some_and(|caps| caps.firmware) {
             Err(anyhow::anyhow!(
-                "Firmware updates are not supported for the Steam Controller"
+                "Firmware updates are not supported for {}",
+                self.controller_kind
+                    .map(ControllerKind::label)
+                    .unwrap_or("this controller")
             ))
         } else if let Some(ref ipc) = self.ipc.clone() {
             mlock(ipc).get_firmware_info()
@@ -1730,7 +1759,13 @@ impl DS4UApp {
     }
 
     fn start_touchpad_filter(&mut self) {
-        if self.is_steam() || self.using_daemon() || self.touchpad_filter.is_some() {
+        if !self
+            .capabilities()
+            .is_some_and(|caps| !matches!(caps.touchpad, crate::inputs::TouchpadKind::None))
+            || self.is_steam()
+            || self.using_daemon()
+            || self.touchpad_filter.is_some()
+        {
             return;
         }
         self.touchpad_filter = Some(TouchpadFilter::start(self.touchpad.mode));
@@ -1825,6 +1860,13 @@ impl DS4UApp {
         if profile.matches_device(kind) {
             return Ok(());
         }
+        if ProfileManager::is_default_profile_name(&profile.name) {
+            return Err(format!(
+                "'{}' is a default profile and cannot be converted across controller families; \
+                 create a new profile with a different name and convert that instead.",
+                profile.name
+            ));
+        }
         profile.convert_to_device(kind);
         self.profile_manager
             .save_profile(&profile)
@@ -1853,9 +1895,66 @@ impl DS4UApp {
         Ok(())
     }
 
+    pub(crate) fn rename_profile(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let old = old.trim();
+        let new = new.trim();
+        ProfileManager::validate_profile_name(new).map_err(|e| e.to_string())?;
+        let profile = self
+            .profile_manager
+            .load_profile(old)
+            .map_err(|e| format!("Could not load profile '{}': {e}", old))?;
+        let canonical = ProfileManager::default_profile_name(profile.device);
+        if canonical == old || canonical == profile.name {
+            return Err("Cannot rename the default profile for this device".to_string());
+        }
+        if ProfileManager::is_default_profile_name(new) {
+            return Err(format!(
+                "Profile name '{}' is reserved for a default profile",
+                new
+            ));
+        }
+        if new == old {
+            return Ok(());
+        }
+        if self.profile_manager.profile_exists(new) {
+            return Err(format!("A profile named '{}' already exists", new));
+        }
+
+        if let Some(ipc) = self.ipc.clone() {
+            mlock(&ipc)
+                .rename_profile(old, new)
+                .map_err(|e| format!("Failed to rename profile '{}': {e}", old))?;
+        } else {
+            self.profile_manager
+                .rename_profile(old, new)
+                .map_err(|e| format!("Failed to rename profile '{}': {e}", old))?;
+        }
+
+        if let Some(current) = self.current_profile.as_mut()
+            && current.name == old
+        {
+            current.name = new.to_string();
+        }
+        let family = profile.device.family();
+        if self.settings.remembered_profile(family) == old {
+            self.settings.remember_profile(family, new);
+            self.settings_manager.save(&self.settings);
+        }
+        Ok(())
+    }
+
     pub(crate) fn delete_profile(&mut self, name: &str) -> Result<(), String> {
-        if name == "Default" || name == "SteamDefault" {
-            return Err("Cannot delete the default profile".to_string());
+        match self.profile_manager.load_profile(name) {
+            Ok(profile) => {
+                let canonical = ProfileManager::default_profile_name(profile.device);
+                if canonical == name || canonical == profile.name {
+                    return Err("Cannot delete the default profile for this device".to_string());
+                }
+            }
+            Err(_) if ProfileManager::is_default_profile_name(name) => {
+                return Err("Cannot delete the default profile".to_string());
+            }
+            Err(_) => {}
         }
         if let Some(ipc) = self.ipc.clone() {
             mlock(&ipc)
@@ -2085,14 +2184,8 @@ impl DS4UApp {
         }
 
         let current = self.current_family();
-        let target = controller::requested_family(preference).or_else(|| {
-            controller::switch_target(
-                preference,
-                current,
-                self.inventory_has(ControllerFamily::DualSense),
-                self.inventory_has(ControllerFamily::Steam),
-            )
-        });
+        let target = controller::requested_family(preference)
+            .or_else(|| controller::switch_target(preference, current, self.inventory_presence()));
         let pending = target.filter(|target| current != Some(*target));
         if let Some(family) = pending {
             self.begin_pending_target(family);

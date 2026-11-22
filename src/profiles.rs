@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common::*,
     gyro::{GyroActivation, GyroConfig},
-    inputs::{Button, ControllerKind},
+    inputs::{AbxyLayout, Button, ControllerFamily, ControllerKind},
     remap::{Binding, BindingSlot, Layer, PressTiming, PressType, StickConfig},
     stick_mouse::StickMouseConfig,
     trackpad_mouse::{SteamPadHapticStrength, SteamPadMouseConfig},
@@ -18,6 +18,9 @@ use crate::{
 };
 
 pub const CURRENT_PROFILE_SCHEMA: u32 = 4;
+
+pub const EIGHTBITDO_DEFAULT_PROFILE: &str = "8BitDoDefault";
+pub const LEGACY_EIGHTBITDO_DEFAULT_PROFILE: &str = "EightBitDoDefault";
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct TriggerConfig {
@@ -232,16 +235,23 @@ pub struct Profile {
 
     #[serde(default)]
     pub touchpad_show_overlay: bool,
+
+    #[serde(default)]
+    pub eightbitdo_abxy_layout: AbxyLayout,
 }
 
 impl Profile {
     pub fn matches_device(&self, kind: ControllerKind) -> bool {
-        self.device.is_steam() == kind.is_steam()
+        self.device.family() == kind.family()
     }
 
     /// Convert a profile's device family while preserving every mapping and
-    /// configuration field.
+    /// configuration field except gyro center calibration, which is specific
+    /// to the physical controller and resets when the family changes.
     pub fn convert_to_device(&mut self, kind: ControllerKind) {
+        if self.device.family() != kind.family() {
+            self.gyro_mouse.bias_dps = [0.0; 3];
+        }
         self.device = kind;
     }
 
@@ -251,10 +261,16 @@ impl Profile {
             device: kind,
             ..Default::default()
         };
-        if kind.is_steam() {
-            profile.gyro_mouse.activation = GyroActivation::RightTrackpad;
-            profile.steam_left_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
-            profile.steam_right_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
+        match kind.family() {
+            ControllerFamily::Steam => {
+                profile.gyro_mouse.activation = GyroActivation::RightTrackpad;
+                profile.steam_left_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
+                profile.steam_right_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
+            }
+            ControllerFamily::EightBitDo => {
+                profile.gyro_mouse.activation = GyroActivation::Always;
+            }
+            ControllerFamily::DualSense => {}
         }
         profile
     }
@@ -393,22 +409,105 @@ impl ProfileManager {
         crate::common::config_dir().join("profiles")
     }
 
+    /// Rename the legacy `EightBitDoDefault.json` file to `8BitDoDefault.json`.
+    /// Returns true when the profile was migrated.
+    pub fn migrate_eightbitdo_default_name(&self) -> bool {
+        let old_path = self
+            .profiles_dir
+            .join(format!("{LEGACY_EIGHTBITDO_DEFAULT_PROFILE}.json"));
+        let new_path = self
+            .profiles_dir
+            .join(format!("{EIGHTBITDO_DEFAULT_PROFILE}.json"));
+        if !old_path.exists() || new_path.exists() {
+            return false;
+        }
+        let Ok(mut profile) = self.load_profile(LEGACY_EIGHTBITDO_DEFAULT_PROFILE) else {
+            return false;
+        };
+        profile.name = EIGHTBITDO_DEFAULT_PROFILE.to_string();
+        if self.save_profile(&profile).is_err() {
+            return false;
+        }
+        fs::remove_file(old_path).is_ok()
+    }
+
     pub fn default_profile_name(kind: ControllerKind) -> &'static str {
-        if kind.is_steam() {
-            "SteamDefault"
-        } else {
-            "Default"
+        match kind.family() {
+            ControllerFamily::DualSense => "Default",
+            ControllerFamily::Steam => "SteamDefault",
+            ControllerFamily::EightBitDo => EIGHTBITDO_DEFAULT_PROFILE,
+        }
+    }
+
+    pub fn is_default_profile_name(name: &str) -> bool {
+        [
+            "Default",
+            "SteamDefault",
+            LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
+            EIGHTBITDO_DEFAULT_PROFILE,
+        ]
+        .contains(&name)
+    }
+
+    /// Pick a deterministic fallback name when the canonical default is owned
+    /// by another family. Returns the name and an existing same-family profile
+    /// to reuse, if one already exists.
+    fn fallback_default(&self, canonical: &str, kind: ControllerKind) -> (String, Option<Profile>) {
+        let suffix = Self::sanitize_filename(match kind.family() {
+            ControllerFamily::DualSense => "DualSense",
+            ControllerFamily::Steam => "Steam",
+            ControllerFamily::EightBitDo => "8BitDo",
+        });
+        let base = format!("{canonical}_{suffix}");
+        let mut index = 1;
+        loop {
+            let candidate = if index == 1 {
+                base.clone()
+            } else {
+                format!("{base}_{index}")
+            };
+            if !self.profile_exists(&candidate) {
+                return (candidate, None);
+            }
+            if let Ok(profile) = self.load_profile(&candidate)
+                && profile.matches_device(kind)
+            {
+                return (candidate, Some(profile));
+            }
+            index += 1;
         }
     }
 
     pub fn ensure_default_for(&self, kind: ControllerKind) -> Profile {
         let name = Self::default_profile_name(kind);
+        if kind.family() == ControllerFamily::EightBitDo {
+            self.migrate_eightbitdo_default_name();
+        }
         if let Ok(profile) = self.load_profile(name)
-            && profile.device.is_steam() == kind.is_steam()
+            && profile.matches_device(kind)
         {
             return profile;
         }
-        let mut profile = Profile::default_for_device(name.to_string(), kind);
+        // Prefer an unmigrated legacy default over creating a fresh empty one.
+        if kind.family() == ControllerFamily::EightBitDo
+            && !self.profile_exists(name)
+            && let Ok(mut profile) = self.load_profile(LEGACY_EIGHTBITDO_DEFAULT_PROFILE)
+            && profile.matches_device(kind)
+        {
+            profile.name = name.to_string();
+            return profile;
+        }
+        // Never overwrite the canonical default of another family.
+        let name = if self.profile_exists(name) {
+            let (fallback, existing) = self.fallback_default(name, kind);
+            if let Some(profile) = existing {
+                return profile;
+            }
+            fallback
+        } else {
+            name.to_string()
+        };
+        let mut profile = Profile::default_for_device(name.clone(), kind);
         profile.schema_version = CURRENT_PROFILE_SCHEMA;
         let _ = self.save_profile(&profile);
         profile
@@ -469,8 +568,48 @@ impl ProfileManager {
         Ok(profile)
     }
 
+    pub fn rename_profile(&self, old: &str, new: &str) -> Result<()> {
+        let new = new.trim();
+        Self::validate_profile_name(new)?;
+        let mut profile = self.load_profile(old)?;
+        let canonical = Self::default_profile_name(profile.device);
+        if canonical == old || canonical == profile.name {
+            bail!("Cannot rename the default profile for this device");
+        }
+        if Self::is_default_profile_name(new) {
+            bail!("Profile name '{}' is reserved for a default profile", new);
+        }
+        if new == old {
+            return Ok(());
+        }
+        if self.profile_exists(new) {
+            bail!("A profile named '{}' already exists", new);
+        }
+
+        profile.name = new.to_string();
+        self.save_profile(&profile)?;
+
+        let old_path = self
+            .profiles_dir
+            .join(format!("{}.json", Self::sanitize_filename(old)));
+        if let Err(e) = fs::remove_file(&old_path) {
+            bail!(
+                "Profile renamed to '{}' but the old file '{}' could not be removed: {}",
+                new,
+                old,
+                e
+            );
+        }
+        Ok(())
+    }
+
     pub fn delete_profile(&self, name: &str) -> Result<()> {
-        if name == "Default" || name == "SteamDefault" {
+        if let Ok(profile) = self.load_profile(name) {
+            let canonical = Self::default_profile_name(profile.device);
+            if canonical == name || canonical == profile.name {
+                bail!("Cannot delete the default profile for this device");
+            }
+        } else if Self::is_default_profile_name(name) {
             bail!("Cannot delete the default profile for this device");
         }
         let filename = format!("{}.json", Self::sanitize_filename(name));
@@ -494,7 +633,7 @@ impl ProfileManager {
     pub fn list_profiles_for(&self, kind: ControllerKind) -> Vec<Profile> {
         self.load_all_profiles()
             .into_iter()
-            .filter(|profile| profile.device.is_steam() == kind.is_steam())
+            .filter(|profile| profile.matches_device(kind))
             .collect()
     }
 
@@ -581,6 +720,8 @@ impl Default for Profile {
             haptic_speed: 1.0,
 
             touchpad_show_overlay: true,
+
+            eightbitdo_abxy_layout: AbxyLayout::Xbox,
         }
     }
 }
@@ -671,6 +812,32 @@ mod tests {
 
         assert_eq!(back.schema_version, CURRENT_PROFILE_SCHEMA);
         assert_eq!(back.button_bindings, p.button_bindings);
+    }
+
+    #[test]
+    fn profiles_without_abxy_layout_default_to_xbox() {
+        let p = legacy();
+        assert_eq!(p.eightbitdo_abxy_layout, AbxyLayout::Xbox);
+        assert_eq!(Profile::default().eightbitdo_abxy_layout, AbxyLayout::Xbox);
+
+        let mut value = serde_json::to_value(Profile::default()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("profile object")
+            .remove("eightbitdo_abxy_layout");
+        let back: Profile = serde_json::from_value(value).expect("legacy profile parses");
+        assert_eq!(back.eightbitdo_abxy_layout, AbxyLayout::Xbox);
+    }
+
+    #[test]
+    fn eightbitdo_abxy_layout_round_trips() {
+        let mut p = legacy();
+        p.eightbitdo_abxy_layout = AbxyLayout::Switch;
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.eightbitdo_abxy_layout, AbxyLayout::Switch);
     }
 
     #[test]
@@ -975,6 +1142,13 @@ mod tests {
         let dualsense =
             Profile::default_for_device("Default".to_string(), ControllerKind::DualSense);
         assert_eq!(dualsense.gyro_mouse.activation, GyroActivation::Touchpad);
+
+        let eightbitdo = Profile::default_for_device(
+            EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        assert_eq!(eightbitdo.gyro_mouse.activation, GyroActivation::Always);
+        assert_eq!(eightbitdo.gyro_mouse.dots_per_360, 6545.0);
     }
 
     #[test]
@@ -1039,13 +1213,45 @@ mod tests {
             ProfileManager::default_profile_name(ControllerKind::SteamController),
             "SteamDefault"
         );
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::EightBitDoPro3),
+            EIGHTBITDO_DEFAULT_PROFILE
+        );
         for kind in [
             ControllerKind::DualSense,
             ControllerKind::DualSenseEdge,
             ControllerKind::SteamController,
+            ControllerKind::EightBitDoPro3,
         ] {
             ProfileManager::validate_profile_name(ProfileManager::default_profile_name(kind))
                 .expect("default profile names must be valid filenames");
+        }
+    }
+
+    #[test]
+    fn default_profile_name_detection_covers_canonical_and_legacy_names() {
+        for name in [
+            "Default",
+            "SteamDefault",
+            LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
+            EIGHTBITDO_DEFAULT_PROFILE,
+        ] {
+            assert!(
+                ProfileManager::is_default_profile_name(name),
+                "{name} must be treated as a default profile"
+            );
+        }
+        for name in [
+            "default",
+            "Default_DualSense",
+            "SteamDefault_Steam",
+            "MyDefault",
+            "",
+        ] {
+            assert!(
+                !ProfileManager::is_default_profile_name(name),
+                "{name} must not be treated as a default profile"
+            );
         }
     }
 
@@ -1072,6 +1278,31 @@ mod tests {
         assert!(parsed.matches_device(ControllerKind::DualSense));
         assert!(parsed.matches_device(ControllerKind::DualSenseEdge));
         assert!(!parsed.matches_device(ControllerKind::SteamController));
+        assert!(!parsed.matches_device(ControllerKind::EightBitDoPro3));
+    }
+
+    #[test]
+    fn eightbitdo_profiles_match_by_family_and_round_trip() {
+        let mut p = Profile::default_for_device(
+            EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        p.button_bindings.insert(
+            Button::EightBitDoPL,
+            vec![slot(Binding::Gamepad(Button::L1))],
+        );
+
+        assert!(p.matches_device(ControllerKind::EightBitDoPro3));
+        assert!(!p.matches_device(ControllerKind::DualSense));
+        assert!(!p.matches_device(ControllerKind::SteamController));
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.device, ControllerKind::EightBitDoPro3);
+        assert_eq!(
+            back.button_bindings.get(&Button::EightBitDoPL),
+            p.button_bindings.get(&Button::EightBitDoPL)
+        );
     }
 
     #[test]
@@ -1113,6 +1344,7 @@ mod tests {
         });
         p.lightbar_r = 1.0;
         p.gyro_mouse.dots_per_360 = 1234.0;
+        p.gyro_mouse.bias_dps = [0.5, -0.25, 1.0];
         let bindings = p.button_bindings.clone();
         let layers = p.layers.clone();
 
@@ -1123,6 +1355,450 @@ mod tests {
         assert_eq!(p.layers, layers);
         assert_eq!(p.lightbar_r, 1.0);
         assert_eq!(p.gyro_mouse.dots_per_360, 1234.0);
+        assert_eq!(p.gyro_mouse.bias_dps, [0.0; 3]);
+
+        p.convert_to_device(ControllerKind::EightBitDoPro3);
+        assert_eq!(p.device, ControllerKind::EightBitDoPro3);
+        assert_eq!(p.button_bindings, bindings);
+        assert_eq!(p.layers, layers);
+        assert_eq!(p.gyro_mouse.bias_dps, [0.0; 3]);
+    }
+
+    #[test]
+    fn conversion_resets_gyro_bias_only_across_families() {
+        let mut cross_family =
+            Profile::default_for_device("Cross".into(), ControllerKind::DualSense);
+        cross_family.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
+
+        cross_family.convert_to_device(ControllerKind::EightBitDoPro3);
+
+        assert_eq!(cross_family.device, ControllerKind::EightBitDoPro3);
+        assert_eq!(cross_family.gyro_mouse.bias_dps, [0.0; 3]);
+
+        let mut same_family = Profile::default_for_device("Same".into(), ControllerKind::DualSense);
+        same_family.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
+
+        same_family.convert_to_device(ControllerKind::DualSenseEdge);
+
+        assert_eq!(same_family.device, ControllerKind::DualSenseEdge);
+        assert_eq!(same_family.gyro_mouse.bias_dps, [0.6, -0.05, -0.4]);
+    }
+
+    #[test]
+    fn default_profile_names_cannot_be_deleted() {
+        let pm = ProfileManager {
+            profiles_dir: std::env::temp_dir().join("gyro4u-delete-guard-unused"),
+        };
+        for name in [
+            "Default",
+            "SteamDefault",
+            LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
+            EIGHTBITDO_DEFAULT_PROFILE,
+        ] {
+            assert!(pm.delete_profile(name).is_err(), "{name} must be protected");
+        }
+    }
+
+    #[test]
+    fn rename_profile_preserves_content_and_moves_file() {
+        let dir = temp_profiles_dir("rename-preserve");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let mut profile =
+            Profile::default_for_device("Build".to_string(), ControllerKind::DualSense);
+        profile.lightbar_r = 0.42;
+        profile.gyro_mouse.dots_per_360 = 1234.0;
+        profile
+            .button_bindings
+            .insert(Button::Cross, vec![slot(Binding::Gamepad(Button::Circle))]);
+        profile.layers.push(Layer {
+            activator: Button::L1,
+            bindings: HashMap::from([(
+                Button::Circle,
+                vec![slot(Binding::Gamepad(Button::Square))],
+            )]),
+        });
+        pm.save_profile(&profile).expect("save profile");
+        let other = Profile::default_for_device("Other".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&other).expect("save other profile");
+
+        pm.rename_profile("Build", "Renamed")
+            .expect("rename profile");
+
+        assert!(!pm.profile_exists("Build"));
+        assert!(pm.profile_exists("Renamed"));
+        assert!(pm.profile_exists("Other"));
+        let renamed = pm.load_profile("Renamed").expect("load renamed profile");
+        assert_eq!(renamed.name, "Renamed");
+        assert_eq!(renamed.device, ControllerKind::DualSense);
+        assert_eq!(renamed.lightbar_r, 0.42);
+        assert_eq!(renamed.gyro_mouse.dots_per_360, 1234.0);
+        assert_eq!(renamed.button_bindings, profile.button_bindings);
+        assert_eq!(renamed.layers, profile.layers);
+        assert_eq!(
+            pm.load_profile("Other")
+                .expect("other profile remains")
+                .name,
+            other.name
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_profile_rejects_existing_name() {
+        let dir = temp_profiles_dir("rename-conflict");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let build = Profile::default_for_device("Build".to_string(), ControllerKind::DualSense);
+        let other = Profile::default_for_device("Other".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&build).expect("save profile");
+        pm.save_profile(&other).expect("save other profile");
+
+        let err = pm
+            .rename_profile("Build", "Other")
+            .expect_err("conflicting name must be rejected");
+
+        assert!(err.to_string().contains("already exists"));
+        assert!(pm.profile_exists("Build"));
+        assert_eq!(
+            pm.load_profile("Build")
+                .expect("original profile remains")
+                .name,
+            "Build"
+        );
+        assert_eq!(
+            pm.load_profile("Other")
+                .expect("conflicting profile remains")
+                .name,
+            other.name
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_profile_rejects_canonical_default() {
+        let dir = temp_profiles_dir("rename-default");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let default = Profile::default_for_device("Default".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&default).expect("save default profile");
+
+        let err = pm
+            .rename_profile("Default", "Mine")
+            .expect_err("canonical default must be protected");
+
+        assert!(err.to_string().contains("default profile"));
+        assert!(pm.profile_exists("Default"));
+        assert!(!pm.profile_exists("Mine"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_profile_rejects_reserved_default_name() {
+        let dir = temp_profiles_dir("rename-reserved");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let build = Profile::default_for_device("Build".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&build).expect("save profile");
+
+        let err = pm
+            .rename_profile("Build", "Default")
+            .expect_err("reserved name must be rejected");
+
+        assert!(err.to_string().contains("reserved"));
+        assert!(pm.profile_exists("Build"));
+        assert!(!pm.profile_exists("Default"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_profile_allows_same_name_no_op() {
+        let dir = temp_profiles_dir("rename-noop");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let build = Profile::default_for_device("Build".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&build).expect("save profile");
+
+        pm.rename_profile("Build", "Build")
+            .expect("same-name rename is a no-op");
+
+        let loaded = pm.load_profile("Build").expect("profile remains");
+        assert_eq!(loaded.name, "Build");
+        assert_eq!(loaded.device, build.device);
+        assert_eq!(loaded.button_bindings, build.button_bindings);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_profile_uses_loaded_device_for_default_guard() {
+        let dir = temp_profiles_dir("delete-device-aware");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let converted =
+            Profile::default_for_device("Default".to_string(), ControllerKind::EightBitDoPro3);
+        let other = Profile::default_for_device("Other".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&converted).expect("save 8BitDo profile");
+        pm.save_profile(&other).expect("save other profile");
+
+        pm.delete_profile("Default")
+            .expect("8BitDo profile named Default is not the 8BitDo default");
+
+        assert!(!pm.profile_exists("Default"));
+        assert!(pm.profile_exists("Other"));
+        assert_eq!(
+            pm.load_profile("Other")
+                .expect("unrelated profile remains")
+                .name,
+            other.name
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_profile_rejects_dualsense_default() {
+        let dir = temp_profiles_dir("delete-dualsense-default");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let default = Profile::default_for_device("Default".to_string(), ControllerKind::DualSense);
+        pm.save_profile(&default).expect("save DualSense default");
+
+        let err = pm
+            .delete_profile("Default")
+            .expect_err("DualSense default must be protected");
+
+        assert!(err.to_string().contains("default profile"));
+        assert!(pm.profile_exists("Default"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_profile_rejects_eightbitdo_default() {
+        let dir = temp_profiles_dir("delete-eightbitdo-default");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let default = Profile::default_for_device(
+            EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        pm.save_profile(&default).expect("save 8BitDo default");
+
+        let err = pm
+            .delete_profile(EIGHTBITDO_DEFAULT_PROFILE)
+            .expect_err("canonical 8BitDo default must be protected");
+
+        assert!(err.to_string().contains("default profile"));
+        assert!(pm.profile_exists(EIGHTBITDO_DEFAULT_PROFILE));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn temp_profiles_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gyro4u-profile-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp profile dir");
+        dir
+    }
+
+    #[test]
+    fn eightbitdo_default_profile_file_is_migrated() {
+        let dir = temp_profiles_dir("eightbitdo-migrate");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let mut old = Profile::default_for_device(
+            LEGACY_EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        old.lightbar_r = 0.75;
+        old.button_bindings.insert(
+            Button::EightBitDoPL,
+            vec![slot(Binding::Gamepad(Button::L1))],
+        );
+        pm.save_profile(&old).expect("save legacy profile");
+
+        assert!(pm.migrate_eightbitdo_default_name());
+
+        assert!(!pm.profile_exists(LEGACY_EIGHTBITDO_DEFAULT_PROFILE));
+        assert!(pm.profile_exists(EIGHTBITDO_DEFAULT_PROFILE));
+        let migrated = pm
+            .load_profile(EIGHTBITDO_DEFAULT_PROFILE)
+            .expect("load migrated profile");
+        assert_eq!(migrated.name, EIGHTBITDO_DEFAULT_PROFILE);
+        assert_eq!(migrated.device, ControllerKind::EightBitDoPro3);
+        assert_eq!(migrated.lightbar_r, 0.75);
+        assert_eq!(
+            migrated.button_bindings.get(&Button::EightBitDoPL),
+            old.button_bindings.get(&Button::EightBitDoPL)
+        );
+        assert!(
+            !pm.migrate_eightbitdo_default_name(),
+            "migration is idempotent"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_default_for_does_not_overwrite_other_family_default() {
+        let dir = temp_profiles_dir("default-collision");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let mut eightbitdo =
+            Profile::default_for_device("Default".to_string(), ControllerKind::EightBitDoPro3);
+        eightbitdo.lightbar_r = 0.42;
+        eightbitdo.gyro_mouse.bias_dps = [0.1, 0.2, 0.3];
+        pm.save_profile(&eightbitdo).expect("save 8BitDo default");
+        let canonical_path = dir.join("Default.json");
+        let original = fs::read_to_string(&canonical_path).expect("read canonical default");
+
+        let dualsense = pm.ensure_default_for(ControllerKind::DualSense);
+
+        assert_eq!(dualsense.name, "Default_DualSense");
+        assert_eq!(dualsense.device, ControllerKind::DualSense);
+        assert!(pm.profile_exists("Default_DualSense"));
+        assert_eq!(
+            fs::read_to_string(&canonical_path).expect("canonical default still present"),
+            original,
+            "the other family's default file must be untouched"
+        );
+        let kept = pm
+            .load_profile("Default")
+            .expect("original default remains loadable");
+        assert_eq!(kept.device, ControllerKind::EightBitDoPro3);
+        assert_eq!(kept.name, "Default");
+        assert_eq!(kept.lightbar_r, 0.42);
+        assert_eq!(kept.gyro_mouse.bias_dps, [0.1, 0.2, 0.3]);
+
+        assert_eq!(
+            pm.ensure_default_for(ControllerKind::DualSense).name,
+            "Default_DualSense",
+            "the fallback default is reused on later calls"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_fallback_name_avoids_occupied_fallback() {
+        let dir = temp_profiles_dir("default-collision-suffix");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let eightbitdo =
+            Profile::default_for_device("Default".to_string(), ControllerKind::EightBitDoPro3);
+        pm.save_profile(&eightbitdo).expect("save 8BitDo default");
+        let steam = Profile::default_for_device(
+            "Default_DualSense".to_string(),
+            ControllerKind::SteamController,
+        );
+        pm.save_profile(&steam).expect("save occupied fallback");
+
+        let dualsense = pm.ensure_default_for(ControllerKind::DualSense);
+
+        assert_eq!(dualsense.name, "Default_DualSense_2");
+        assert!(pm.profile_exists("Default_DualSense_2"));
+        assert_eq!(
+            pm.load_profile("Default_DualSense")
+                .expect("occupied fallback remains")
+                .device,
+            ControllerKind::SteamController
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_default_for_creates_canonical_defaults_on_clean_install() {
+        let dir = temp_profiles_dir("default-clean");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+
+        for (kind, name) in [
+            (ControllerKind::DualSense, "Default"),
+            (ControllerKind::DualSenseEdge, "Default"),
+            (ControllerKind::SteamController, "SteamDefault"),
+            (ControllerKind::EightBitDoPro3, EIGHTBITDO_DEFAULT_PROFILE),
+        ] {
+            let profile = pm.ensure_default_for(kind);
+            assert_eq!(profile.name, name);
+            assert!(profile.matches_device(kind));
+            assert!(pm.profile_exists(name));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_new_eightbitdo_default_is_not_overwritten() {
+        let dir = temp_profiles_dir("eightbitdo-migrate-existing");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let old = Profile::default_for_device(
+            LEGACY_EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        pm.save_profile(&old).expect("save legacy profile");
+        let mut new = Profile::default_for_device(
+            EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        new.lightbar_g = 0.9;
+        pm.save_profile(&new).expect("save current profile");
+
+        assert!(!pm.migrate_eightbitdo_default_name());
+
+        assert!(pm.profile_exists(LEGACY_EIGHTBITDO_DEFAULT_PROFILE));
+        let kept = pm
+            .load_profile(EIGHTBITDO_DEFAULT_PROFILE)
+            .expect("load current profile");
+        assert_eq!(kept.lightbar_g, 0.9);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_default_for_migrates_legacy_eightbitdo_profile() {
+        let dir = temp_profiles_dir("eightbitdo-ensure");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let mut old = Profile::default_for_device(
+            LEGACY_EIGHTBITDO_DEFAULT_PROFILE.to_string(),
+            ControllerKind::EightBitDoPro3,
+        );
+        old.lightbar_b = 0.6;
+        pm.save_profile(&old).expect("save legacy profile");
+
+        let profile = pm.ensure_default_for(ControllerKind::EightBitDoPro3);
+
+        assert_eq!(profile.name, EIGHTBITDO_DEFAULT_PROFILE);
+        assert_eq!(profile.lightbar_b, 0.6);
+        assert!(pm.profile_exists(EIGHTBITDO_DEFAULT_PROFILE));
+        assert!(!pm.profile_exists(LEGACY_EIGHTBITDO_DEFAULT_PROFILE));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

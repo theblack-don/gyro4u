@@ -2,7 +2,7 @@
 
 # Gyro4U
 
-Native Linux GUI tool for configuring DualSense controllers and the 2026 Steam Controller.
+Native Linux GUI tool for configuring DualSense controllers, the 2026 Steam Controller, and the 8BitDo Pro 3.
 
 > [!note]
 > **DualSense Edge** is supported and tested, including the Edge paddles and Fn buttons.
@@ -10,6 +10,10 @@ Native Linux GUI tool for configuring DualSense controllers and the 2026 Steam C
 > **Steam Controller (2026)** is supported over USB (`28DE:1302`), Bluetooth LE
 > (`28DE:1303`), a wireless puck (`28DE:1304`), and the integrated receiver
 > (`28DE:1305`). One controller and one puck slot are active at a time.
+>
+> **8BitDo Pro 3** (`2DC8:6009`) is supported wired over USB-C and experimentally
+> over Bluetooth in D mode. The 2.4G receiver (`2DC8:3109`, `2DC8:310B`) is
+> XInput/Switch only and cannot provide DInput, gyro, or the extra buttons.
 
 > [!warning]
 > gyro4u talks to the controller directly over HID. Close Steam Input (or disable
@@ -30,10 +34,14 @@ Gyro4U is based on [DS4U](https://git.yokai.digital/deadYokai/ds4u) by deadYokai
 - USB and Bluetooth connection, with automatic hotplug detection
 - Safe read-only Steam receiver probing (daemon) detects a controller waking in
   an idle puck/receiver slot within ~1 s, without changing controller state
-- Controller switcher in the top bar (`Automatic`, `DualSense`, or `Steam
-  Controller`); `Automatic` keeps the DualSense-first behavior when both are
-  present, and family switches retry until the requested controller is available
+- Controller switcher in the top bar (`Automatic`, `DualSense`, `Steam
+  Controller`, or `8BitDo`); `Automatic` prefers DualSense, then Steam, then
+  8BitDo when several are present, and family switches retry until the requested
+  controller is available
 - DualSense Edge paddles and Fn buttons
+- 8BitDo Pro 3: A/B/X/Y, D-pad, sticks, L1/R1/L2/R2, L3/R3, Create/Options/Home,
+  and the L4/R4/PL/PR extra buttons; basic left/right rumble; battery/charging;
+  wired or Bluetooth DInput
 - Steam Controller (2026): both trackpads (touch, click, position, pressure),
   capacitive stick touch and grip sense, L4/L5/R4/R5 back buttons, L/R trigger
   clicks, Steam and QAM buttons, battery/charging, and wired/BLE/puck transports
@@ -54,6 +62,13 @@ horizontal scrolling and inertia/spin friction are deferred. Pad haptics are
 one-shot clicks and scroll ticks rather than arbitrary waveforms.
 Microsoft/Sony-only pages (adaptive triggers, lightbar, audio, firmware) are
 hidden for Steam. The stacked-rectangle button is View, not Capture.
+
+8BitDo Pro 3 limits in this release: DInput is required, so use USB-C or
+Bluetooth in D mode; the 2.4G receiver is not supported. Bluetooth is
+experimental. The Pro 3 has no lightbar, audio, firmware flashing, adaptive
+triggers, or touchpad, and these pages are hidden. Rumble is basic left/right
+output only; trigger rumble and raw haptics are unavailable. Star and Profile
+are on-controller functions and are not host-visible inputs.
 
 ### Remapping
 - Remap buttons to gamepad buttons, keyboard keys, mouse buttons, or scroll wheel directions
@@ -133,7 +148,7 @@ behavior.
 - Microphone on/off toggle
 
 ### Profiles
-- Save, load, switch and delete profiles (see [Profiles](#profiles))
+- Create, save, load, switch, rename and delete profiles (see [Profiles](#profiles))
 - A profile captures everything: lightbar/LEDs, sticks, triggers, haptics, gyro,
   touchpad, mic, plus button remaps and disabled buttons
 - Switch/list/reload profiles from the [command line](#command-line-usage)
@@ -231,7 +246,7 @@ nix run .#
 ### Device permissions
 
 To talk to the controller without running as root, install a `udev` rule that
-grants your user access to the DualSense `hidraw` device and to `uinput`.
+grants your user access to the controller `hidraw` devices and to `uinput`.
 The RPM package installs these files for you; when building from source or
 using Nix, install them manually (on NixOS use the configuration below).
 
@@ -244,6 +259,7 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1302", TAG+="ua
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1303", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1305", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="6009", TAG+="uaccess"
 KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
 ```
 
@@ -272,7 +288,7 @@ socket:
 |---------|-------------|
 | `gyro4u` | Launch the GUI |
 | `gyro4u --daemon` | Run as the background daemon |
-| `gyro4u --list-devices` | List detected DualSense and Steam Controller devices, their transport and path, and candidates that were skipped |
+| `gyro4u --list-devices` | List detected DualSense, Steam Controller, and 8BitDo Pro 3 devices, their transport and path, and candidates that were skipped |
 | `gyro4u --status` | Show the connected controller (serial, product id, USB/BT) and battery |
 | `gyro4u --list-profiles` | List saved profile names |
 | `gyro4u --switch-profile <name>` | Switch the active profile |
@@ -343,25 +359,25 @@ with an incompatible protocol and print the reason.
 ### Controller switching and multiple controllers
 
 The controller switcher sits in the top bar next to the connection and battery
-indicators. It shows one row per controller family: DualSense and Steam
-Controller. All Steam puck/receiver slots collapse into a single Steam row. The
+indicators. It shows one row per controller family: DualSense, Steam Controller,
+and 8BitDo. All Steam puck/receiver slots collapse into a single Steam row. The
 daemon probes idle receiver slots read-only about once per second, so waking a
 Steam Controller makes that row live within about a second. A puck with no live
 controller is labeled **Steam receiver** instead of looking like a connected
 controller. Empty probes, busy handles, and permission errors are treated as
 unknown, so they never mark a receiver dead.
 
-- Choosing **Automatic** uses the DualSense when both families are available and
-  falls back to the Steam Controller otherwise. It stays DualSense-first: a
-  Steam Controller waking while a DualSense is active updates the row but does
-  not switch automatically.
-- Clicking the Steam row, even while the controller is asleep, selects Steam
-  explicitly and retries. While it is off, the switcher shows `Steam Controller
-  not detected — turn it on; retrying`, and the current DualSense stays active
-  until the Steam Controller actually opens.
+- Choosing **Automatic** uses DualSense first, then Steam, then 8BitDo when
+  several families are available. It stays DualSense-first: another controller
+  waking while a DualSense is active updates its row but does not switch
+  automatically.
+- Clicking another family row selects it explicitly and retries. While a Steam
+  Controller is off, the switcher shows `Steam Controller not detected — turn it
+  on; retrying`, and the current controller stays active until the Steam
+  Controller actually opens.
 - Choosing a family is explicit: if that family is not available, Gyro4U keeps
   the current controller and retries on hotplug, safe liveness probes, and
-  connection checks. It never silently substitutes the other family.
+  connection checks. It never silently substitutes another family.
 - A switch opens the requested controller before releasing the current one. If
   startup fails, the current controller stays active and the failure is shown in
   the switcher.
@@ -393,6 +409,7 @@ services.udev.extraRules = ''
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1303", TAG+="uaccess"
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", TAG+="uaccess"
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1305", TAG+="uaccess"
+  SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="6009", TAG+="uaccess"
   KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
 '';
 ```
@@ -409,18 +426,28 @@ ExecStart=%h/.nix-profile/bin/gyro4u --daemon
 
 Profiles are stored as JSON in `~/.config/gyro4u/profiles/<name>.json`, and the
 filename is derived from the profile name, so profile names are global across
-both controller families.
+all controller families.
 The active profile for each family is recorded separately in `settings.json`. A
-`Default` profile is created automatically for DualSense and a `SteamDefault`
-profile for the Steam Controller. Profiles carry their device family, so
-Steam-only bindings do not leak into DualSense profiles (and vice versa).
+`Default` profile is created automatically for DualSense, a `SteamDefault`
+profile for the Steam Controller, and an `8BitDoDefault` profile for the
+8BitDo Pro 3. Profiles carry their device family, so Steam-only and 8BitDo-only
+bindings do not leak into DualSense profiles (and vice versa).
 
-The **Profiles** section shows every profile with a DualSense or Steam family
-badge. Profiles for the other family can be converted to the active controller;
-conversion preserves every mapping and setting and only changes the profile's
-device family. Creating a profile whose name already exists for the other
-family reports the collision and offers the same conversion instead of silently
-overwriting anything.
+The **Profiles** section shows every profile with a DualSense, Steam, or 8BitDo
+family badge. Profiles for another family can be converted to the active
+controller; conversion preserves every mapping and setting and only changes the
+profile's device family. Family-specific buttons and features may become inert
+after conversion, and the UI warns about this. Creating a profile whose name
+already exists for another family reports the collision and offers the same
+conversion instead of silently overwriting anything.
+
+Profiles can also be renamed inline from the **Profiles** section. Renaming
+preserves every mapping and setting, and renaming the active profile keeps it
+active. The profile's canonical default (`Default` for DualSense,
+`SteamDefault` for the Steam Controller, `8BitDoDefault` for the 8BitDo Pro 3)
+cannot be renamed or deleted. Deletion is device-aware: it protects the default
+of the profile's own device, so a converted profile that happens to be named
+`Default` while owned by another family can be deleted.
 
 Manage profiles from the GUI (the **Profiles** section) or from the [command line](#command-line-usage).
 

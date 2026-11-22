@@ -11,6 +11,8 @@ use crate::state::Section;
 use crate::style::apply_style;
 
 pub mod audio;
+pub mod eightbitdo;
+pub mod eightbitdo_layout;
 pub mod firmware;
 pub mod gyroscope;
 pub mod haptics;
@@ -73,8 +75,9 @@ impl DS4UApp {
 
             ui.label(
                 RichText::new(
-                    "DualSense / DualSense Edge via USB or Bluetooth, \
-                     or Steam Controller (2026) via USB, Bluetooth, or puck/receiver",
+                    "DualSense / DualSense Edge via USB or Bluetooth, Steam Controller (2026) \
+                     via USB, Bluetooth, or puck/receiver, or 8BitDo Pro 3 via USB-C or \
+                     Bluetooth in D mode",
                 )
                 .size(16.0)
                 .color(c.text_dim()),

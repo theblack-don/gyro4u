@@ -36,6 +36,42 @@ fn haptic_intensity(pattern: HapticPattern, strength: u8, speed: f32, elapsed: f
 }
 
 impl DS4UApp {
+    fn render_eightbitdo_haptics(&mut self, ui: &mut Ui) {
+        let c = self.theme.colors.clone();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ds_section(ui, &c, "Rumble");
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(crate::ui::widgets::ROW_PAD_X);
+                    ui.label(
+                        RichText::new(
+                            "The 8BitDo Pro 3 exposes basic left/right rumble. Raw haptics, \
+                             trigger rumble, and vibration attenuation are unavailable.",
+                        )
+                        .size(12.0)
+                        .italics()
+                        .color(c.text_dim()),
+                    );
+                });
+                ds_section(ui, &c, "Test");
+                ds_row(ui, |ui| {
+                    ds_label(ui, "Pulse");
+                    if ds_pill_button(ui, &c, "Left", false).clicked() {
+                        self.test_rumble(255, 0, 350);
+                    }
+                    ui.add_space(8.0);
+                    if ds_pill_button(ui, &c, "Right", false).clicked() {
+                        self.test_rumble(0, 255, 350);
+                    }
+                    ui.add_space(8.0);
+                    if ds_pill_button(ui, &c, "Both", false).clicked() {
+                        self.test_rumble(255, 255, 350);
+                    }
+                });
+            });
+    }
+
     fn render_haptic_visual(
         ui: &mut Ui,
         pattern: HapticPattern,
@@ -98,6 +134,10 @@ impl DS4UApp {
     }
 
     pub(crate) fn render_haptics_settings(&mut self, ui: &mut Ui) {
+        if self.is_eightbitdo() {
+            self.render_eightbitdo_haptics(ui);
+            return;
+        }
         let c = self.theme.colors.clone();
         let in_daemon = self.ipc.is_some();
         let can_stream = self.controller.is_some() || self.ipc.is_some();

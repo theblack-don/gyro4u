@@ -4,7 +4,7 @@ use egui::{Color32, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::app::DS4UApp;
 use crate::gyro::{GyroAcceleration, GyroActivation, GyroConfig, RAW_COUNTS_PER_DPS};
-use crate::inputs::{Button, ControllerKind, ControllerState};
+use crate::inputs::{AbxyLayout, Button, ControllerKind, ControllerState};
 use crate::state::GyroCalibration;
 use crate::theme::ThemeColors;
 use crate::ui::widgets::{
@@ -40,12 +40,13 @@ impl ActivationKind {
         Self::Toggle,
         Self::Trigger,
     ];
+    const EIGHTBITDO: [Self; 4] = [Self::Always, Self::Hold, Self::Toggle, Self::Trigger];
 
     fn choices(kind: ControllerKind) -> &'static [Self] {
-        if kind.is_steam() {
-            &Self::STEAM
-        } else {
-            &Self::DUAL_SENSE
+        match kind.family() {
+            crate::inputs::ControllerFamily::Steam => &Self::STEAM,
+            crate::inputs::ControllerFamily::EightBitDo => &Self::EIGHTBITDO,
+            crate::inputs::ControllerFamily::DualSense => &Self::DUAL_SENSE,
         }
     }
 
@@ -129,11 +130,16 @@ fn activation_state(s: &ControllerState, activation: &GyroActivation) -> Option<
     }
 }
 
-fn source_hint(source: &GyroActivation, kind: ControllerKind) -> String {
+fn source_hint(source: &GyroActivation, kind: ControllerKind, abxy: AbxyLayout) -> String {
     match source {
         GyroActivation::Always => "the controller is connected".to_string(),
-        GyroActivation::Hold { button } => format!("{} is held", button.label()),
-        GyroActivation::Toggle { button } => format!("{} is toggled on", button.label()),
+        GyroActivation::Hold { button } => {
+            format!("{} is held", button.device_label_with_layout(kind, abxy))
+        }
+        GyroActivation::Toggle { button } => format!(
+            "{} is toggled on",
+            button.device_label_with_layout(kind, abxy)
+        ),
         GyroActivation::Touchpad => {
             if kind.is_steam() {
                 "either Steam trackpad is touched".to_string()
@@ -143,14 +149,15 @@ fn source_hint(source: &GyroActivation, kind: ControllerKind) -> String {
         }
         GyroActivation::LeftTrackpad => "the left Steam trackpad is touched".to_string(),
         GyroActivation::RightTrackpad => "the right Steam trackpad is touched".to_string(),
-        GyroActivation::Trigger { button, .. } => {
-            format!("{} is at or past the threshold", button.label())
-        }
+        GyroActivation::Trigger { button, .. } => format!(
+            "{} is at or past the threshold",
+            button.device_label_with_layout(kind, abxy)
+        ),
         GyroActivation::AnyOf(_) => "any source is active".to_string(),
     }
 }
 
-fn activation_hint(activation: &GyroActivation, kind: ControllerKind) -> String {
+fn activation_hint(activation: &GyroActivation, kind: ControllerKind, abxy: AbxyLayout) -> String {
     match activation {
         GyroActivation::Always => {
             "Gyro is always active while the controller is connected.".to_string()
@@ -185,7 +192,7 @@ fn activation_hint(activation: &GyroActivation, kind: ControllerKind) -> String 
             } else {
                 let parts: Vec<String> = sources
                     .iter()
-                    .map(|source| source_hint(source, kind))
+                    .map(|source| source_hint(source, kind, abxy))
                     .collect();
                 format!("Active while {}.", parts.join(" or "))
             }
@@ -298,6 +305,7 @@ impl DS4UApp {
         source: &mut GyroActivation,
         choices: &[Button],
         kind: ControllerKind,
+        abxy: AbxyLayout,
     ) -> (bool, bool) {
         let mut changed = false;
         let mut remove = false;
@@ -310,11 +318,14 @@ impl DS4UApp {
                 GyroActivation::Hold { button } | GyroActivation::Toggle { button } => {
                     let mut picked = *button;
                     egui::ComboBox::from_id_salt(("ds4u_gyro_source_button", index))
-                        .selected_text(picked.label())
+                        .selected_text(picked.device_label_with_layout(kind, abxy))
                         .show_ui(ui, |ui| {
                             for option in choices {
                                 if ui
-                                    .selectable_label(picked == *option, option.device_label(kind))
+                                    .selectable_label(
+                                        picked == *option,
+                                        option.device_label_with_layout(kind, abxy),
+                                    )
                                     .clicked()
                                 {
                                     picked = *option;
@@ -383,11 +394,12 @@ impl DS4UApp {
         flatten_sources(&cfg.activation, &mut sources);
 
         let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
+        let abxy = self.abxy_layout();
         let choices = kind.target_buttons();
         let mut remove = None;
         for (index, source) in sources.iter_mut().enumerate() {
             let (row_changed, row_remove) =
-                Self::render_gyro_source_row(ui, c, index, source, choices, kind);
+                Self::render_gyro_source_row(ui, c, index, source, choices, kind, abxy);
             changed |= row_changed;
             if row_remove {
                 remove = Some(index);
@@ -448,11 +460,14 @@ impl DS4UApp {
             if matches!(add_kind, ActivationKind::Hold | ActivationKind::Toggle) {
                 ui.add_space(8.0);
                 egui::ComboBox::from_id_salt("ds4u_gyro_add_button_pick")
-                    .selected_text(add_button.label())
+                    .selected_text(add_button.device_label_with_layout(kind, abxy))
                     .show_ui(ui, |ui| {
                         for option in choices {
                             if ui
-                                .selectable_label(add_button == *option, option.device_label(kind))
+                                .selectable_label(
+                                    add_button == *option,
+                                    option.device_label_with_layout(kind, abxy),
+                                )
                                 .clicked()
                             {
                                 add_button = *option;
@@ -531,7 +546,7 @@ impl DS4UApp {
         ui.horizontal(|ui| {
             ui.add_space(ROW_PAD_X);
             ui.label(
-                RichText::new(activation_hint(&cfg.activation, kind))
+                RichText::new(activation_hint(&cfg.activation, kind, abxy))
                     .size(12.0)
                     .italics()
                     .color(c.text_dim()),

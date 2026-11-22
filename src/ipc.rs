@@ -46,7 +46,7 @@ pub type DaemonStream = transport::Stream;
 pub type DaemonListener = transport::Listener;
 pub type ControllerInfoTuple = (String, u16, bool, ControllerKind, String);
 
-pub const IPC_PROTOCOL_VERSION: u32 = 6;
+pub const IPC_PROTOCOL_VERSION: u32 = 8;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,6 +254,10 @@ pub enum DaemonCommand {
     },
     DeleteProfile {
         name: String,
+    },
+    RenameProfile {
+        old: String,
+        new: String,
     },
     GetActiveProfile,
     SetControllerPreference {
@@ -635,6 +639,17 @@ impl IpcClient {
         }
     }
 
+    pub fn rename_profile(&mut self, old: &str, new: &str) -> Result<()> {
+        match self.request(DaemonCommand::RenameProfile {
+            old: old.to_string(),
+            new: new.to_string(),
+        })? {
+            DaemonResponse::Ok => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            _ => Ok(()),
+        }
+    }
+
     pub fn get_active_profile(&mut self) -> Result<String> {
         match self.request(DaemonCommand::GetActiveProfile)? {
             DaemonResponse::ActiveProfile { name } => Ok(name),
@@ -687,10 +702,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_six_rejects_a_protocol_five_daemon() {
-        assert_eq!(IPC_PROTOCOL_VERSION, 6);
+    fn protocol_eight_rejects_a_protocol_seven_daemon() {
+        assert_eq!(IPC_PROTOCOL_VERSION, 8);
         assert!(incompatible(Ok(DaemonResponse::Pong {
-            protocol: 5,
+            protocol: 7,
             app_version: "0.2.0".to_string(),
         })));
     }

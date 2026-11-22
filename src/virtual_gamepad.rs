@@ -6,8 +6,9 @@ use crate::inputs::{
     BTN_CIRCLE, BTN_CREATE, BTN_CROSS, BTN_EDGE_FN_LEFT, BTN_EDGE_FN_RIGHT, BTN_EDGE_PADDLE_LEFT,
     BTN_EDGE_PADDLE_RIGHT, BTN_L1, BTN_L2, BTN_L3, BTN_OPTIONS, BTN_PS, BTN_R1, BTN_R2, BTN_R3,
     BTN_SQUARE, BTN_TRIANGLE, ControllerKind, ControllerState, DPAD_E, DPAD_N, DPAD_NE, DPAD_NW,
-    DPAD_S, DPAD_SE, DPAD_SW, DPAD_W, EXTRA_BTN_L4, EXTRA_BTN_L5, EXTRA_BTN_LEFT_GRIP,
-    EXTRA_BTN_LEFT_PAD, EXTRA_BTN_LEFT_PAD_TOUCH, EXTRA_BTN_LEFT_STICK_TOUCH,
+    DPAD_S, DPAD_SE, DPAD_SW, DPAD_W, EXTRA_BTN_EIGHTBITDO_L4, EXTRA_BTN_EIGHTBITDO_PL,
+    EXTRA_BTN_EIGHTBITDO_PR, EXTRA_BTN_EIGHTBITDO_R4, EXTRA_BTN_L4, EXTRA_BTN_L5,
+    EXTRA_BTN_LEFT_GRIP, EXTRA_BTN_LEFT_PAD, EXTRA_BTN_LEFT_PAD_TOUCH, EXTRA_BTN_LEFT_STICK_TOUCH,
     EXTRA_BTN_LEFT_TRIGGER_CLICK, EXTRA_BTN_QAM, EXTRA_BTN_R4, EXTRA_BTN_R5, EXTRA_BTN_RIGHT_GRIP,
     EXTRA_BTN_RIGHT_PAD, EXTRA_BTN_RIGHT_PAD_TOUCH, EXTRA_BTN_RIGHT_STICK_TOUCH,
     EXTRA_BTN_RIGHT_TRIGGER_CLICK, EXTRA_BTN_STEAM,
@@ -66,6 +67,13 @@ const STEAM_EXTRA_KEYS: [(u32, u16); 16] = [
     (EXTRA_BTN_RIGHT_TRIGGER_CLICK, BTN_TRIGGER_HAPPY16),
 ];
 
+const EIGHTBITDO_EXTRA_KEYS: [(u32, u16); 4] = [
+    (EXTRA_BTN_EIGHTBITDO_L4, BTN_TRIGGER_HAPPY1),
+    (EXTRA_BTN_EIGHTBITDO_R4, BTN_TRIGGER_HAPPY2),
+    (EXTRA_BTN_EIGHTBITDO_PL, BTN_TRIGGER_HAPPY3),
+    (EXTRA_BTN_EIGHTBITDO_PR, BTN_TRIGGER_HAPPY4),
+];
+
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 const ABS_Z: u16 = 0x02;
@@ -112,11 +120,13 @@ impl VirtualGamepad {
             keys.extend_from_slice(&EDGE_KEYS);
         } else if kind.is_steam() {
             keys.extend(STEAM_EXTRA_KEYS.iter().map(|(_, key)| *key));
+        } else if kind.is_eightbitdo() {
+            keys.extend(EIGHTBITDO_EXTRA_KEYS.iter().map(|(_, key)| *key));
         }
-        let name = if kind.is_steam() {
-            "Gyro4U Steam Controller"
-        } else {
-            "Gyro4U DualSense Wireless Controller"
+        let name = match kind.family() {
+            crate::inputs::ControllerFamily::Steam => "Gyro4U Steam Controller",
+            crate::inputs::ControllerFamily::EightBitDo => "Gyro4U 8BitDo Pro 3",
+            crate::inputs::ControllerFamily::DualSense => "Gyro4U DualSense Wireless Controller",
         };
         let dev = UinputDevice::create(UinputSpec {
             name,
@@ -201,6 +211,10 @@ impl VirtualGamepad {
             for (mask, key) in STEAM_EXTRA_KEYS {
                 changed |= dev.emit(EV_KEY, key, (s.extra_buttons & mask != 0) as i32);
             }
+        } else if self.kind.is_eightbitdo() {
+            for (mask, key) in EIGHTBITDO_EXTRA_KEYS {
+                changed |= dev.emit(EV_KEY, key, (s.extra_buttons & mask != 0) as i32);
+            }
         }
 
         if !changed {
@@ -229,6 +243,34 @@ mod tests {
         for (mask, _) in STEAM_EXTRA_KEYS {
             assert_eq!(mask.count_ones(), 1);
             assert!(mask <= crate::inputs::EXTRA_BTN_RIGHT_TRIGGER_CLICK);
+        }
+    }
+
+    #[test]
+    fn eightbitdo_extra_keys_use_happy_buttons_and_disjoint_masks() {
+        let masks: HashSet<u32> = EIGHTBITDO_EXTRA_KEYS
+            .iter()
+            .map(|(mask, _)| *mask)
+            .collect();
+        let keys: HashSet<u16> = EIGHTBITDO_EXTRA_KEYS.iter().map(|(_, key)| *key).collect();
+        assert_eq!(masks.len(), 4);
+        assert_eq!(keys.len(), 4);
+        assert_eq!(
+            keys,
+            HashSet::from([
+                BTN_TRIGGER_HAPPY1,
+                BTN_TRIGGER_HAPPY2,
+                BTN_TRIGGER_HAPPY3,
+                BTN_TRIGGER_HAPPY4,
+            ])
+        );
+        for (mask, _) in EIGHTBITDO_EXTRA_KEYS {
+            assert_eq!(mask.count_ones(), 1);
+            assert!(mask >= crate::inputs::EXTRA_BTN_EIGHTBITDO_L4);
+            assert!(mask <= crate::inputs::EXTRA_BTN_EIGHTBITDO_PR);
+        }
+        for (_, key) in EIGHTBITDO_EXTRA_KEYS {
+            assert!(!KEYS.contains(&key), "{key:#x} collides with a base key");
         }
     }
 }
