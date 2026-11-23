@@ -6,4 +6,9 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1303", TAG+="ua
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1305", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="6009", TAG+="uaccess"
+# Flydigi Apex 5 and Vader 5 Pro, wired PC mode.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="37d7", ATTRS{idProduct}=="2501", MODE="0664", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="37d7", ATTRS{idProduct}=="2401", MODE="0664", GROUP="input", TAG+="uaccess"
+# GameSir Tarantula Pro through its 2.4 GHz dongle in XInput/PC mode.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3537", ATTRS{idProduct}=="103e", MODE="0664", GROUP="input", TAG+="uaccess"
 KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"

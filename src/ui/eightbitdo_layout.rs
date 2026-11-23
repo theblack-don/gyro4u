@@ -1,12 +1,12 @@
 //! Shared 8BitDo Pro 3 geometry and hit testing for the live and mapping views.
-//! Coordinates mirror `assets/eightbitdo_pro3.svg` (160 x 125 viewBox).
+//! Coordinates mirror `assets/eightbitdo_pro3.svg` (160 x 105 viewBox).
 
 use egui::{Pos2, Rect, vec2};
 
 use crate::inputs::Button;
 
 pub const VIEWBOX_W: f32 = 160.0;
-pub const VIEWBOX_H: f32 = 125.0;
+pub const VIEWBOX_H: f32 = 105.0;
 
 /// Small system buttons stay selectable when the diagram is narrow.
 pub const MIN_HIT_RADIUS_PX: f32 = 9.0;
@@ -49,38 +49,40 @@ impl EightBitDoRect {
     }
 }
 
-pub const LEFT_TRIGGER_BAR: EightBitDoRect = EightBitDoRect::new(28.0, 2.0, 34.0, 10.0);
-pub const RIGHT_TRIGGER_BAR: EightBitDoRect = EightBitDoRect::new(98.0, 2.0, 34.0, 10.0);
-pub const LEFT_BUMPER: EightBitDoRect = EightBitDoRect::new(28.0, 12.0, 36.0, 10.0);
-pub const RIGHT_BUMPER: EightBitDoRect = EightBitDoRect::new(96.0, 12.0, 36.0, 10.0);
-pub const LEFT_EXTRA_BUMPER: EightBitDoRect = EightBitDoRect::new(66.0, 12.0, 10.0, 10.0);
-pub const RIGHT_EXTRA_BUMPER: EightBitDoRect = EightBitDoRect::new(84.0, 12.0, 10.0, 10.0);
+pub const LEFT_TRIGGER_BAR: EightBitDoRect = EightBitDoRect::new(28.0, 2.0, 34.0, 7.0);
+pub const RIGHT_TRIGGER_BAR: EightBitDoRect = EightBitDoRect::new(98.0, 2.0, 34.0, 7.0);
+pub const LEFT_BUMPER: EightBitDoRect = EightBitDoRect::new(28.0, 10.0, 36.0, 6.0);
+pub const RIGHT_BUMPER: EightBitDoRect = EightBitDoRect::new(96.0, 10.0, 36.0, 6.0);
+pub const LEFT_EXTRA_BUMPER: EightBitDoRect = EightBitDoRect::new(66.0, 8.0, 10.0, 8.0);
+pub const RIGHT_EXTRA_BUMPER: EightBitDoRect = EightBitDoRect::new(84.0, 8.0, 10.0, 8.0);
 
-pub const DPAD_UP: (f32, f32) = (46.0, 33.5);
-pub const DPAD_RIGHT: (f32, f32) = (54.0, 41.0);
-pub const DPAD_DOWN: (f32, f32) = (46.0, 48.5);
-pub const DPAD_LEFT: (f32, f32) = (38.0, 41.0);
-pub const DPAD_HIT_RADIUS: f32 = 4.0;
+pub const DPAD_UP: (f32, f32) = (42.0, 23.6);
+pub const DPAD_RIGHT: (f32, f32) = (48.4, 30.0);
+pub const DPAD_DOWN: (f32, f32) = (42.0, 36.4);
+pub const DPAD_LEFT: (f32, f32) = (35.6, 30.0);
+pub const DPAD_HIT_RADIUS: f32 = 3.2;
 
-pub const LEFT_STICK: (f32, f32) = (56.0, 71.0);
-pub const RIGHT_STICK: (f32, f32) = (104.0, 71.0);
+pub const LEFT_STICK: (f32, f32) = (59.0, 46.0);
+pub const RIGHT_STICK: (f32, f32) = (101.0, 46.0);
 pub const STICK_RADIUS: f32 = 9.5;
 pub const STICK_HIT_RADIUS: f32 = 9.5;
 
-pub const FACE_RADIUS: f32 = 5.4;
-pub const FACE_HIT_RADIUS: f32 = 4.8;
-pub const FACE_Y: (f32, f32) = (114.0, 30.0);
-pub const FACE_X: (f32, f32) = (103.0, 41.0);
-pub const FACE_B: (f32, f32) = (125.0, 41.0);
-pub const FACE_A: (f32, f32) = (114.0, 52.0);
+/// Xbox cap positions; the physical buttons are Triangle top, Square left,
+/// Circle right, and Cross bottom.
+pub const FACE_RADIUS: f32 = 4.8;
+pub const FACE_HIT_RADIUS: f32 = 4.5;
+pub const FACE_Y: (f32, f32) = (117.0, 21.0);
+pub const FACE_X: (f32, f32) = (106.5, 30.0);
+pub const FACE_B: (f32, f32) = (127.5, 30.0);
+pub const FACE_A: (f32, f32) = (117.0, 39.0);
 
-pub const CREATE_PILL: EightBitDoRect = EightBitDoRect::new(68.0, 36.0, 10.0, 5.0);
-pub const OPTIONS_PILL: EightBitDoRect = EightBitDoRect::new(82.0, 36.0, 10.0, 5.0);
-pub const HOME_CENTER: (f32, f32) = (80.0, 49.0);
-pub const HOME_RADIUS: f32 = 6.0;
+pub const CREATE_PILL: EightBitDoRect = EightBitDoRect::new(69.0, 27.7, 9.5, 3.2);
+pub const OPTIONS_PILL: EightBitDoRect = EightBitDoRect::new(81.5, 27.7, 9.5, 3.2);
+pub const HOME_CENTER: (f32, f32) = (80.0, 47.6);
+pub const HOME_RADIUS: f32 = 2.8;
 
-pub const PL_PADDLE: EightBitDoRect = EightBitDoRect::new(22.0, 92.0, 14.0, 16.0);
-pub const PR_PADDLE: EightBitDoRect = EightBitDoRect::new(124.0, 92.0, 14.0, 16.0);
+pub const PL_PADDLE: EightBitDoRect = EightBitDoRect::new(22.0, 80.0, 14.0, 16.0);
+pub const PR_PADDLE: EightBitDoRect = EightBitDoRect::new(124.0, 80.0, 14.0, 16.0);
 
 #[derive(Clone, Copy, Debug)]
 pub enum EightBitDoShape {
@@ -242,8 +244,44 @@ impl EightBitDoLayout {
 mod tests {
     use super::*;
     use crate::inputs::ControllerKind;
+    use crate::ui::model_art_tests::{assert_circle, assert_no_text, assert_rect, assert_viewbox};
     use egui::pos2;
     use std::collections::HashSet;
+
+    const SVG: &str = include_str!("../../assets/eightbitdo_pro3.svg");
+
+    #[test]
+    fn svg_art_matches_layout_constants() {
+        assert_viewbox(SVG, VIEWBOX_W, VIEWBOX_H);
+        assert_no_text(SVG);
+
+        for (id, rect) in [
+            ("pro3-create", CREATE_PILL),
+            ("pro3-options", OPTIONS_PILL),
+            (
+                "pro3-home",
+                EightBitDoRect::new(
+                    HOME_CENTER.0 - HOME_RADIUS,
+                    HOME_CENTER.1 - 1.4,
+                    HOME_RADIUS * 2.0,
+                    2.8,
+                ),
+            ),
+        ] {
+            assert_rect(SVG, id, rect.x, rect.y, rect.w, rect.h);
+        }
+
+        for (id, (cx, cy), radius) in [
+            ("pro3-stick-l", LEFT_STICK, STICK_RADIUS),
+            ("pro3-stick-r", RIGHT_STICK, STICK_RADIUS),
+            ("pro3-face-y", FACE_Y, FACE_RADIUS),
+            ("pro3-face-x", FACE_X, FACE_RADIUS),
+            ("pro3-face-b", FACE_B, FACE_RADIUS),
+            ("pro3-face-a", FACE_A, FACE_RADIUS),
+        ] {
+            assert_circle(SVG, id, cx, cy, radius);
+        }
+    }
 
     fn layout() -> EightBitDoLayout {
         EightBitDoLayout::fit(Rect::from_min_size(

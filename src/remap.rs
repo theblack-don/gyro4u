@@ -1116,6 +1116,32 @@ mod tests {
     }
 
     #[test]
+    fn gamesir_extras_pass_through_and_remap_in_the_sony_mask() {
+        let mut s = state(
+            crate::inputs::BTN_GAMESIR_T1 | crate::inputs::BTN_GAMESIR_L4,
+            DPAD_NEUTRAL,
+        );
+        apply(&mut s, HashMap::new(), true);
+        assert_eq!(
+            s.buttons,
+            crate::inputs::BTN_GAMESIR_T1 | crate::inputs::BTN_GAMESIR_L4
+        );
+        assert_eq!(s.extra_buttons, 0);
+
+        let mut s = state(crate::inputs::BTN_GAMESIR_T1, DPAD_NEUTRAL);
+        apply(&mut s, one(Button::GameSirT1, Button::Cross), true);
+        assert_eq!(s.buttons, BTN_CROSS);
+
+        let mut s = state(crate::inputs::BTN_GAMESIR_L4, DPAD_NEUTRAL);
+        apply(&mut s, one(Button::GameSirL4, Button::GameSirR4), true);
+        assert_eq!(s.buttons, crate::inputs::BTN_GAMESIR_R4);
+
+        let mut s = state(crate::inputs::BTN_GAMESIR_SHARE, DPAD_NEUTRAL);
+        apply(&mut s, HashMap::new(), true);
+        assert_eq!(s.buttons, crate::inputs::BTN_GAMESIR_SHARE);
+    }
+
+    #[test]
     fn touchpad_binding_respects_gate() {
         let bindings = one(Button::Touchpad, Button::Cross);
 

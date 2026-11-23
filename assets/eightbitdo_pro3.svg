@@ -1,109 +1,163 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 125" width="160" height="125">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 105" width="160" height="105">
   <!--
-    Original Gyro4U illustration of the 8BitDo Pro 3 front.
-    Monochrome line-art matching the DualSense/Steam views. Geometry matches
-    src/ui/eightbitdo_layout.rs. The rear paddles PL/PR are shown dashed.
+    Original Gyro4U illustration of the 8BitDo Pro 3 front on its charging dock.
+    Crisp single-stroke line art matching src/ui/eightbitdo_layout.rs.
   -->
-  <g fill="none" stroke="#d9dee5" stroke-width="0.34" stroke-linejoin="round" stroke-linecap="round">
-    <ellipse cx="80" cy="121" rx="56" ry="2.8" fill="#000000" stroke="none" opacity="0.18"/>
+  <g fill="none" stroke="#e4ddd6" stroke-width="0.35" stroke-linejoin="round" stroke-linecap="round">
+    <!-- Outer controller shell: flat top edge and smooth rounded grips. -->
+    <path d="M 31.8 93.5
+             C 31.0 95.5, 29.5 97.5, 27 98.5
+             C 21 100.5, 13.5 97, 12 88
+             C 10.5 76, 11.5 55, 14 36
+             C 16 20, 24 10.5, 44 10.5
+             L 116 10.5
+             C 136 10.5, 144 20, 146 36
+             C 148.5 55, 149.5 76, 148 88
+             C 146.5 97, 139 100.5, 133 98.5
+             C 130.5 97.5, 129.0 95.5, 128.2 93.5"/>
 
-    <!-- L2 / R2 triggers and the top bumpers sit behind the shell edge. -->
-    <g fill="#1b1e22" stroke-width="0.34">
-      <rect x="28" y="2" width="34" height="10" rx="3.2"/>
-      <rect x="98" y="2" width="34" height="10" rx="3.2"/>
-    </g>
-    <g fill="#30353c" stroke-width="0.36">
-      <rect x="28" y="12" width="36" height="10" rx="3.4"/>
-      <rect x="96" y="12" width="36" height="10" rx="3.4"/>
-    </g>
-    <g fill="#20242a" stroke-width="0.32">
-      <rect x="66" y="12" width="10" height="10" rx="2.6"/>
-      <rect x="84" y="12" width="10" height="10" rx="2.6"/>
-    </g>
+    <!-- Trapezoidal charging dock stand and double-lined inner lip. -->
+    <path d="M 53 58.2
+             C 46 58.5, 43 61, 41 67
+             L 29.8 101
+             L 130.2 101
+             L 119 67
+             C 117 61, 114 58.5, 107 58.2"/>
+    <path d="M 67.8 58.2 L 92.2 58.2"/>
+    <path d="M 67.1 54.6 L 92.9 54.6"/>
+    <path d="M 30.8 101
+             L 41.8 68
+             C 43.8 62.5, 47 61, 53 61
+             L 107 61
+             C 113 61, 116.2 62.5, 118.2 68
+             L 129.2 101"/>
+    <path d="M 31.8 93.5 L 29.8 98.5 L 29.8 101"/>
+    <path d="M 128.2 93.5 L 130.2 98.5 L 130.2 101"/>
 
-    <!-- Shell: rounded SNES-like body with a central hump and long flared grips. -->
-    <path d="M27.5 22
-             C36 19.4 46 18.4 56 18.2
-             C64 18.1 70 17.4 80 17.2
-             C90 17.4 96 18.1 104 18.2
-             C114 18.4 124 19.4 132.5 22
-             C139 24.7 141.8 31.2 143 39.5
-             C144.8 50.5 146.2 61 146 71
-             C145.9 81 145.4 91.5 144 100.5
-             C142.5 110.2 139.2 117.6 133.5 118
-             C129.4 118.3 126 115.3 123.4 110.4
-             C120.4 104.8 118.6 99 116.4 94.4
-             C114.6 91.2 112.4 89.6 109.4 89.2
-             C99.6 88.4 89.8 86.5 80 86.5
-             C70.2 86.5 60.4 88.4 50.6 89.2
-             C47.6 89.6 45.4 91.2 43.6 94.4
-             C41.4 99 39.6 104.8 36.6 110.4
-             C34 115.3 30.6 118.3 26.5 118
-             C20.8 117.6 17.5 110.2 16 100.5
-             C14.6 91.5 14.1 81 14 71
-             C13.8 61 15.2 50.5 17 39.5
-             C18.2 31.2 21 24.7 27.5 22 Z"
-          fill="#25292f" stroke-width="0.44"/>
+    <!-- Double-lined inner faceplate bezel hugging D-pad and face buttons. -->
+    <path d="M 48.7 53.1
+             C 46.2 54.8, 44.0 55.8, 41.5 55.8
+             C 29 55.8, 19.5 46.8, 19.5 34.5
+             C 19.5 22, 28 12.8, 44 12.8
+             L 116 12.8
+             C 132 12.8, 140.5 22, 140.5 34.5
+             C 140.5 46.8, 131 55.8, 118.5 55.8
+             C 116.0 55.8, 113.8 54.8, 111.3 53.1"/>
+    <path d="M 48.2 52.0
+             C 45.8 53.7, 43.8 54.8, 41.5 54.8
+             C 29.6 54.8, 20.4 46.1, 20.4 34.5
+             C 20.4 22.6, 28.5 13.7, 44 13.7
+             L 116 13.7
+             C 131.5 13.7, 139.6 22.6, 139.6 34.5
+             C 139.6 46.1, 130.4 54.8, 118.5 54.8
+             C 116.2 54.8, 114.2 53.7, 111.8 52.0"/>
 
-    <!-- USB-C port and status LED between the extra bumpers. -->
-    <rect x="77" y="18.2" width="6" height="2" rx="1"
-          fill="#171a1e" stroke="#6f7781" stroke-width="0.22"/>
-    <circle cx="80" cy="21.7" r="0.7" fill="#d9dee5" stroke="none" opacity="0.85"/>
+    <!-- D-pad at (42, 30): outer rounded cross, inner 3D rim, circle + 3 triangles. -->
+    <path d="M 39.4 19.8 H 44.6
+             A 1.2 1.2 0 0 1 45.8 21.0
+             V 26.2 H 51.0
+             A 1.2 1.2 0 0 1 52.2 27.4
+             V 32.6
+             A 1.2 1.2 0 0 1 51.0 33.8
+             H 45.8 V 39.0
+             A 1.2 1.2 0 0 1 44.6 40.2
+             H 39.4
+             A 1.2 1.2 0 0 1 38.2 39.0
+             V 33.8 H 33.0
+             A 1.2 1.2 0 0 1 31.8 32.6
+             V 27.4
+             A 1.2 1.2 0 0 1 33.0 26.2
+             H 38.2 V 21.0
+             A 1.2 1.2 0 0 1 39.4 19.8 Z"/>
+    <path d="M 39.7 20.5 H 44.3
+             A 0.8 0.8 0 0 1 45.1 21.3
+             V 26.9 H 50.7
+             A 0.8 0.8 0 0 1 51.5 27.7
+             V 32.3
+             A 0.8 0.8 0 0 1 50.7 33.1
+             H 45.1 V 38.7
+             A 0.8 0.8 0 0 1 44.3 39.5
+             H 39.7
+             A 0.8 0.8 0 0 1 38.9 38.7
+             V 33.1 H 33.3
+             A 0.8 0.8 0 0 1 32.5 32.3
+             V 27.7
+             A 0.8 0.8 0 0 1 33.3 26.9
+             H 38.9 V 21.3
+             A 0.8 0.8 0 0 1 39.7 20.5 Z" stroke-width="0.28"/>
+    <circle cx="42" cy="30" r="2.8" stroke-width="0.28"/>
+    <circle cx="42" cy="23.6" r="1.4" stroke-width="0.28"/>
+    <path d="M 40.1 34.6 L 43.9 34.6 L 42 38.0 Z" stroke-width="0.28"/>
+    <path d="M 37.4 28.1 L 37.4 31.9 L 34.0 30.0 Z" stroke-width="0.28"/>
+    <path d="M 46.6 28.1 L 46.6 31.9 L 50.0 30.0 Z" stroke-width="0.28"/>
 
-    <!-- Raised centre panel. -->
-    <rect x="65" y="30.5" width="30" height="27.5" rx="8.5"
-          stroke="#6f7781" stroke-width="0.22" opacity="0.45"/>
+    <!-- Center Select/Start double-rimmed stadium plate and two 3D pills. -->
+    <rect x="66.5" y="25.5" width="27" height="8" rx="4"/>
+    <rect x="67.4" y="26.4" width="25.2" height="6.2" rx="3.1" stroke-width="0.28"/>
+    <rect id="pro3-create" x="69" y="27.7" width="9.5" height="3.2" rx="1.6"/>
+    <path d="M 69.2 29.7 C 69.5 31.6, 78.0 31.6, 78.3 29.7" stroke-width="0.28"/>
+    <rect id="pro3-options" x="81.5" y="27.7" width="9.5" height="3.2" rx="1.6"/>
+    <path d="M 81.7 29.7 C 82.0 31.6, 90.5 31.6, 90.8 29.7" stroke-width="0.28"/>
 
-    <!-- D-pad well and cross. -->
-    <circle cx="46" cy="41" r="11.5" fill="#1d2126" stroke="#6f7781" stroke-width="0.3"/>
-    <path d="M41.75 30.5 H50.25 V36.75 H56.5 V45.25 H50.25 V51.5 H41.75 V45.25 H35.5 V36.75 H41.75 Z"
-          fill="#30353c" stroke-width="0.4"/>
-    <path d="M42.95 31.7 H49.05 V37.95 H55.3 V44.05 H49.05 V50.3 H42.95 V44.05 H36.7 V37.95 H42.95 Z"
-          stroke="#6f7781" stroke-width="0.22" opacity="0.55"/>
-    <circle cx="46" cy="41" r="1.3" fill="#171a1e" stroke="#6f7781" stroke-width="0.2"/>
+    <!-- Left analog stick on 3D turret base at (59, 46). -->
+    <circle cx="59" cy="46.5" r="11.2"/>
+    <path d="M 51.3 54.6 C 52.4 55.8, 52.9 56.9, 53.0 58.2
+             M 67.1 54.6 C 67.6 55.8, 67.8 56.9, 67.8 58.2"/>
+    <circle id="pro3-stick-l" cx="59" cy="46" r="9.5"/>
+    <circle cx="59" cy="45.5" r="8.2"/>
+    <circle cx="59" cy="44.9" r="6.7"/>
+    <circle cx="59" cy="44.4" r="5.1"/>
 
-    <!-- Left stick. -->
-    <circle cx="56" cy="71" r="10.5" fill="#1b1e22" stroke-width="0.4"/>
-    <circle cx="56" cy="71" r="9.2" fill="#20242a" stroke-width="0.36"/>
-    <circle cx="56" cy="71" r="7.6" stroke="#6f7781" stroke-width="0.26"
-            stroke-dasharray="0.9 1.1" opacity="0.65"/>
-    <circle cx="56" cy="71" r="5.6" fill="#171a1e" stroke="#6f7781" stroke-width="0.28"/>
-    <path d="M52.3 66.9 C53.8 65.8 55.8 65.4 57.6 65.7"
-          stroke="#8b939d" stroke-width="0.36" opacity="0.5"/>
+    <!-- Right analog stick on 3D turret base at (101, 46). -->
+    <circle cx="101" cy="46.5" r="11.2"/>
+    <path d="M 92.9 54.6 C 92.4 55.8, 92.2 56.9, 92.2 58.2
+             M 108.7 54.6 C 107.6 55.8, 107.1 56.9, 107.0 58.2"/>
+    <circle id="pro3-stick-r" cx="101" cy="46" r="9.5"/>
+    <circle cx="101" cy="45.5" r="8.2"/>
+    <circle cx="101" cy="44.9" r="6.7"/>
+    <circle cx="101" cy="44.4" r="5.1"/>
 
-    <!-- Right stick. -->
-    <circle cx="104" cy="71" r="10.5" fill="#1b1e22" stroke-width="0.4"/>
-    <circle cx="104" cy="71" r="9.2" fill="#20242a" stroke-width="0.36"/>
-    <circle cx="104" cy="71" r="7.6" stroke="#6f7781" stroke-width="0.26"
-            stroke-dasharray="0.9 1.1" opacity="0.65"/>
-    <circle cx="104" cy="71" r="5.6" fill="#171a1e" stroke="#6f7781" stroke-width="0.28"/>
-    <path d="M100.3 66.9 C101.8 65.8 103.8 65.4 105.6 65.7"
-          stroke="#8b939d" stroke-width="0.36" opacity="0.5"/>
+    <!-- Three status LEDs and small horizontal pill between the sticks. -->
+    <circle cx="77.2" cy="42.5" r="0.55" stroke-width="0.28"/>
+    <circle cx="80" cy="42.5" r="0.55" stroke-width="0.28"/>
+    <circle cx="82.8" cy="42.5" r="0.55" stroke-width="0.28"/>
+    <rect id="pro3-home" x="77.2" y="46.2" width="5.6" height="2.8" rx="1.4"/>
 
-    <!-- ABXY face buttons, Xbox positions: Y top, X left, B right, A bottom. -->
-    <g fill="#20242a" stroke-width="0.38">
-      <circle cx="114" cy="30" r="5.4"/>
-      <circle cx="103" cy="41" r="5.4"/>
-      <circle cx="125" cy="41" r="5.4"/>
-      <circle cx="114" cy="52" r="5.4"/>
-    </g>
+    <!-- Star button below-left of D-pad at (40, 50.5). -->
+    <circle cx="40" cy="50.5" r="3.2"/>
+    <circle cx="40" cy="50.5" r="2.6" stroke-width="0.26"/>
+    <path d="M 40.0 48.6
+             L 40.5 49.8
+             L 41.8 49.9
+             L 40.8 50.8
+             L 41.1 52.0
+             L 40.0 51.35
+             L 38.9 52.0
+             L 39.2 50.8
+             L 38.2 49.9
+             L 39.5 49.8 Z" stroke-width="0.24"/>
 
-    <!-- Create / Options pills between the sticks. -->
-    <g fill="#20242a" stroke-width="0.3">
-      <rect x="68" y="36" width="10" height="5" rx="2.5"/>
-      <rect x="82" y="36" width="10" height="5" rx="2.5"/>
-    </g>
+    <!-- Grid/hash button below-right of face buttons at (120, 50.5). -->
+    <circle cx="120" cy="50.5" r="3.2"/>
+    <circle cx="120" cy="50.5" r="2.6" stroke-width="0.26"/>
+    <path d="M 119.3 48.9 V 52.1
+             M 120.0 48.9 V 52.1
+             M 120.7 48.9 V 52.1
+             M 118.9 49.8 H 121.1
+             M 118.9 50.5 H 121.1
+             M 118.9 51.2 H 121.1" stroke-width="0.22"/>
 
-    <!-- Home button centered below the pills. -->
-    <circle cx="80" cy="49" r="6" fill="#20242a" stroke-width="0.36"/>
-    <circle cx="80" cy="49" r="4.7" stroke="#6f7781" stroke-width="0.24" opacity="0.8"/>
-    <path d="M77.2 49.5 L80 46.9 L82.8 49.5 V52.1 H81.1 V50.2 H78.9 V52.1 H77.2 Z"
-          fill="#d9dee5" stroke="none" opacity="0.9"/>
+    <!-- Face buttons diamond with 3D shifted cap rings. -->
+    <circle id="pro3-face-y" cx="117" cy="21" r="4.8"/>
+    <circle cx="117" cy="20.5" r="4.3" stroke-width="0.26"/>
 
-    <!-- PL / PR rear paddles on the back of each grip. Dashed = rear. -->
-    <g fill="#1b1e22" fill-opacity="0.55" stroke-width="0.42" stroke-dasharray="2 1.4">
-      <rect x="22" y="92" width="14" height="16" rx="3.4"/>
-      <rect x="124" y="92" width="14" height="16" rx="3.4"/>
-    </g>
+    <circle id="pro3-face-x" cx="106.5" cy="30" r="4.8"/>
+    <circle cx="106.5" cy="29.5" r="4.3" stroke-width="0.26"/>
+
+    <circle id="pro3-face-b" cx="127.5" cy="30" r="4.8"/>
+    <circle cx="127.5" cy="29.5" r="4.3" stroke-width="0.26"/>
+
+    <circle id="pro3-face-a" cx="117" cy="39" r="4.8"/>
+    <circle cx="117" cy="38.5" r="4.3" stroke-width="0.26"/>
   </g>
 </svg>

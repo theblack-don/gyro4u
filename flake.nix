@@ -58,7 +58,7 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Gyro4U — DualSense, Steam Controller, and 8BitDo Pro 3 utility";
+              description = "Gyro4U — DualSense, Steam Controller, 8BitDo Pro 3, Flydigi Apex 5 / Vader 5 Pro, and GameSir Tarantula Pro utility";
               homepage = "https://github.com/theblack-don/gyro4u";
               license = licenses.mit;
               mainProgram = "gyro4u";

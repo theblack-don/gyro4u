@@ -4,7 +4,7 @@
 Name:           gyro4u
 Version:        0.2.0
 Release:        1%{?dist}
-Summary:        DualSense, Steam Controller, and 8BitDo Pro 3 utility
+Summary:        DualSense, Steam Controller, 8BitDo, Flydigi, and GameSir utility
 
 License:        MIT
 URL:            https://github.com/theblack-don/gyro4u
@@ -32,12 +32,17 @@ BuildRequires:  lld
 
 %description
 Gyro4U is a native Linux GUI utility for configuring DualSense, DualSense Edge,
-Steam Controller (2026), and 8BitDo Pro 3 controllers: input remapping, layers,
-trackpad scrolling and haptics, gyro-to-mouse, stick curves, adaptive triggers,
-profiles, and DualSense firmware updates. 8BitDo support covers wired or
-Bluetooth DInput, extra buttons, basic rumble, and battery; Bluetooth is
-experimental, the 2.4G receiver is not supported, and lightbar, audio, firmware,
-adaptive triggers, and touchpad features are unavailable.
+Steam Controller (2026), 8BitDo Pro 3, Flydigi Apex 5 / Vader 5 Pro, and GameSir
+Tarantula Pro controllers: input remapping, layers, trackpad scrolling and
+haptics, gyro-to-mouse, stick curves, adaptive triggers, profiles, and DualSense
+firmware updates. 8BitDo support covers wired or Bluetooth DInput, extra
+buttons, basic rumble, and battery; Bluetooth is experimental, the 2.4G receiver
+is not supported, and lightbar, audio, firmware, adaptive triggers, and touchpad
+features are unavailable. Flydigi support is wired USB-C PC mode with gyro,
+basic rumble, and extra buttons. GameSir support uses the Tarantula Pro's
+2.4 GHz dongle in XInput/PC mode with gyro, basic rumble, and the T1-T3, C1-C4,
+L4/R4, and Share extras; RGB, firmware updates, and adaptive triggers are
+unavailable, and the wired 3537:1050 mode is not supported yet.
 
 %prep
 %autosetup -n gyro4u-%{version}

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common::*,
     gyro::{GyroActivation, GyroConfig},
-    inputs::{AbxyLayout, Button, ControllerFamily, ControllerKind},
+    inputs::{AbxyLayout, Button, ControllerFamily, ControllerKind, ProfileGroup},
     remap::{Binding, BindingSlot, Layer, PressTiming, PressType, StickConfig},
     stick_mouse::StickMouseConfig,
     trackpad_mouse::{SteamPadHapticStrength, SteamPadMouseConfig},
@@ -21,6 +21,20 @@ pub const CURRENT_PROFILE_SCHEMA: u32 = 4;
 
 pub const EIGHTBITDO_DEFAULT_PROFILE: &str = "8BitDoDefault";
 pub const LEGACY_EIGHTBITDO_DEFAULT_PROFILE: &str = "EightBitDoDefault";
+pub const APEX5_DEFAULT_PROFILE: &str = "Apex5Default";
+pub const VADER5_DEFAULT_PROFILE: &str = "Vader5Default";
+pub const TARANTULA_DEFAULT_PROFILE: &str = "TarantulaProDefault";
+
+pub fn default_profile_name_for_group(group: ProfileGroup) -> &'static str {
+    match group {
+        ProfileGroup::DualSense => "Default",
+        ProfileGroup::Steam => "SteamDefault",
+        ProfileGroup::EightBitDo => EIGHTBITDO_DEFAULT_PROFILE,
+        ProfileGroup::FlydigiApex5 => APEX5_DEFAULT_PROFILE,
+        ProfileGroup::FlydigiVader5Pro => VADER5_DEFAULT_PROFILE,
+        ProfileGroup::GameSirTarantulaPro => TARANTULA_DEFAULT_PROFILE,
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct TriggerConfig {
@@ -242,14 +256,14 @@ pub struct Profile {
 
 impl Profile {
     pub fn matches_device(&self, kind: ControllerKind) -> bool {
-        self.device.family() == kind.family()
+        self.device.same_profile_group(kind)
     }
 
-    /// Convert a profile's device family while preserving every mapping and
+    /// Convert a profile's device while preserving every mapping and
     /// configuration field except gyro center calibration, which is specific
-    /// to the physical controller and resets when the family changes.
+    /// to the physical controller and resets when the profile group changes.
     pub fn convert_to_device(&mut self, kind: ControllerKind) {
-        if self.device.family() != kind.family() {
+        if !self.device.same_profile_group(kind) {
             self.gyro_mouse.bias_dps = [0.0; 3];
         }
         self.device = kind;
@@ -268,6 +282,13 @@ impl Profile {
                 profile.steam_right_pad_mouse.haptic_strength = SteamPadHapticStrength::Medium;
             }
             ControllerFamily::EightBitDo => {
+                profile.gyro_mouse.activation = GyroActivation::Always;
+                profile.eightbitdo_abxy_layout = AbxyLayout::Switch;
+            }
+            ControllerFamily::Flydigi => {
+                profile.gyro_mouse.activation = GyroActivation::Always;
+            }
+            ControllerFamily::GameSir => {
                 profile.gyro_mouse.activation = GyroActivation::Always;
             }
             ControllerFamily::DualSense => {}
@@ -379,8 +400,8 @@ pub enum ProfileNameConflict {
     OtherFamily,
 }
 
-/// Profile filenames are global; classify a name collision by the family the
-/// existing profile belongs to.
+/// Profile filenames are global; classify a name collision by the profile
+/// group the existing profile belongs to.
 pub fn profile_name_conflict(
     existing: Option<&Profile>,
     kind: ControllerKind,
@@ -432,11 +453,7 @@ impl ProfileManager {
     }
 
     pub fn default_profile_name(kind: ControllerKind) -> &'static str {
-        match kind.family() {
-            ControllerFamily::DualSense => "Default",
-            ControllerFamily::Steam => "SteamDefault",
-            ControllerFamily::EightBitDo => EIGHTBITDO_DEFAULT_PROFILE,
-        }
+        default_profile_name_for_group(kind.profile_group())
     }
 
     pub fn is_default_profile_name(name: &str) -> bool {
@@ -445,18 +462,24 @@ impl ProfileManager {
             "SteamDefault",
             LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
             EIGHTBITDO_DEFAULT_PROFILE,
+            APEX5_DEFAULT_PROFILE,
+            VADER5_DEFAULT_PROFILE,
+            TARANTULA_DEFAULT_PROFILE,
         ]
         .contains(&name)
     }
 
     /// Pick a deterministic fallback name when the canonical default is owned
-    /// by another family. Returns the name and an existing same-family profile
-    /// to reuse, if one already exists.
+    /// by another profile group. Returns the name and an existing same-group
+    /// profile to reuse, if one already exists.
     fn fallback_default(&self, canonical: &str, kind: ControllerKind) -> (String, Option<Profile>) {
-        let suffix = Self::sanitize_filename(match kind.family() {
-            ControllerFamily::DualSense => "DualSense",
-            ControllerFamily::Steam => "Steam",
-            ControllerFamily::EightBitDo => "8BitDo",
+        let suffix = Self::sanitize_filename(match kind.profile_group() {
+            ProfileGroup::DualSense => "DualSense",
+            ProfileGroup::Steam => "Steam",
+            ProfileGroup::EightBitDo => "8BitDo",
+            ProfileGroup::FlydigiApex5 => "Flydigi",
+            ProfileGroup::FlydigiVader5Pro => "Vader5",
+            ProfileGroup::GameSirTarantulaPro => "Tarantula",
         });
         let base = format!("{canonical}_{suffix}");
         let mut index = 1;
@@ -478,7 +501,35 @@ impl ProfileManager {
         }
     }
 
+    /// Normalize the shared Flydigi default into an Apex 5 profile and seed a
+    /// Vader 5 Pro default from it. Idempotent; the GUI and daemon may both run
+    /// it. A missing or unreadable Apex5Default is left for the normal default
+    /// path, and an existing Vader5Default is never overwritten.
+    pub fn migrate_flydigi_defaults(&self) {
+        let Ok(mut apex) = self.load_profile(APEX5_DEFAULT_PROFILE) else {
+            return;
+        };
+        if apex.device.profile_group() != ProfileGroup::FlydigiApex5 {
+            apex.convert_to_device(ControllerKind::FlydigiApex5);
+            let _ = self.save_profile(&apex);
+        }
+        if !self.profile_exists(VADER5_DEFAULT_PROFILE) {
+            let mut vader = apex.clone();
+            vader.name = VADER5_DEFAULT_PROFILE.to_string();
+            vader.convert_to_device(ControllerKind::FlydigiVader5Pro);
+            vader.schema_version = CURRENT_PROFILE_SCHEMA;
+            let _ = self.save_profile(&vader);
+        }
+    }
+
     pub fn ensure_default_for(&self, kind: ControllerKind) -> Profile {
+        let group = kind.profile_group();
+        if matches!(
+            group,
+            ProfileGroup::FlydigiApex5 | ProfileGroup::FlydigiVader5Pro
+        ) {
+            self.migrate_flydigi_defaults();
+        }
         let name = Self::default_profile_name(kind);
         if kind.family() == ControllerFamily::EightBitDo {
             self.migrate_eightbitdo_default_name();
@@ -497,7 +548,7 @@ impl ProfileManager {
             profile.name = name.to_string();
             return profile;
         }
-        // Never overwrite the canonical default of another family.
+        // Never overwrite the canonical default of another profile group.
         let name = if self.profile_exists(name) {
             let (fallback, existing) = self.fallback_default(name, kind);
             if let Some(profile) = existing {
@@ -1149,6 +1200,30 @@ mod tests {
         );
         assert_eq!(eightbitdo.gyro_mouse.activation, GyroActivation::Always);
         assert_eq!(eightbitdo.gyro_mouse.dots_per_360, 6545.0);
+        assert_eq!(eightbitdo.eightbitdo_abxy_layout, AbxyLayout::Switch);
+
+        let apex = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiApex5,
+        );
+        assert_eq!(apex.gyro_mouse.activation, GyroActivation::Always);
+        assert!(apex.matches_device(ControllerKind::FlydigiApex5));
+
+        let vader = Profile::default_for_device(
+            VADER5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        assert_eq!(vader.gyro_mouse.activation, GyroActivation::Always);
+        assert!(vader.matches_device(ControllerKind::FlydigiVader5Pro));
+        assert!(!vader.matches_device(ControllerKind::FlydigiApex5));
+
+        let gamesir = Profile::default_for_device(
+            TARANTULA_DEFAULT_PROFILE.to_string(),
+            ControllerKind::GameSirTarantulaPro,
+        );
+        assert_eq!(gamesir.gyro_mouse.activation, GyroActivation::Always);
+        assert!(gamesir.matches_device(ControllerKind::GameSirTarantulaPro));
+        assert!(!gamesir.matches_device(ControllerKind::FlydigiApex5));
     }
 
     #[test]
@@ -1217,11 +1292,26 @@ mod tests {
             ProfileManager::default_profile_name(ControllerKind::EightBitDoPro3),
             EIGHTBITDO_DEFAULT_PROFILE
         );
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::FlydigiApex5),
+            APEX5_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::FlydigiVader5Pro),
+            VADER5_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            ProfileManager::default_profile_name(ControllerKind::GameSirTarantulaPro),
+            TARANTULA_DEFAULT_PROFILE
+        );
         for kind in [
             ControllerKind::DualSense,
             ControllerKind::DualSenseEdge,
             ControllerKind::SteamController,
             ControllerKind::EightBitDoPro3,
+            ControllerKind::FlydigiApex5,
+            ControllerKind::FlydigiVader5Pro,
+            ControllerKind::GameSirTarantulaPro,
         ] {
             ProfileManager::validate_profile_name(ProfileManager::default_profile_name(kind))
                 .expect("default profile names must be valid filenames");
@@ -1235,6 +1325,9 @@ mod tests {
             "SteamDefault",
             LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
             EIGHTBITDO_DEFAULT_PROFILE,
+            APEX5_DEFAULT_PROFILE,
+            VADER5_DEFAULT_PROFILE,
+            TARANTULA_DEFAULT_PROFILE,
         ] {
             assert!(
                 ProfileManager::is_default_profile_name(name),
@@ -1306,6 +1399,82 @@ mod tests {
     }
 
     #[test]
+    fn apex5_profiles_match_by_profile_group_and_round_trip_extras() {
+        let mut p = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiApex5,
+        );
+        p.button_bindings
+            .insert(Button::ApexLM, vec![slot(Binding::Gamepad(Button::L1))]);
+
+        assert!(p.matches_device(ControllerKind::FlydigiApex5));
+        assert!(!p.matches_device(ControllerKind::FlydigiVader5Pro));
+        assert!(!p.matches_device(ControllerKind::DualSense));
+        assert!(!p.matches_device(ControllerKind::EightBitDoPro3));
+
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.device, ControllerKind::FlydigiApex5);
+        assert_eq!(
+            back.button_bindings.get(&Button::ApexLM),
+            p.button_bindings.get(&Button::ApexLM)
+        );
+    }
+
+    #[test]
+    fn vader5_profiles_do_not_match_apex5() {
+        let p = Profile::default_for_device(
+            VADER5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+
+        assert!(p.matches_device(ControllerKind::FlydigiVader5Pro));
+        assert!(!p.matches_device(ControllerKind::FlydigiApex5));
+        assert!(!p.matches_device(ControllerKind::DualSense));
+    }
+
+    #[test]
+    fn list_profiles_for_separates_flydigi_models() {
+        let dir = temp_profiles_dir("list-groups");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let apex = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiApex5,
+        );
+        let vader = Profile::default_for_device(
+            VADER5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        let edge = Profile::default_for_device("Edge".to_string(), ControllerKind::DualSenseEdge);
+        pm.save_profile(&apex).expect("save Apex profile");
+        pm.save_profile(&vader).expect("save Vader profile");
+        pm.save_profile(&edge).expect("save Edge profile");
+
+        let apex_names: Vec<_> = pm
+            .list_profiles_for(ControllerKind::FlydigiApex5)
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(apex_names, vec![APEX5_DEFAULT_PROFILE.to_string()]);
+        let vader_names: Vec<_> = pm
+            .list_profiles_for(ControllerKind::FlydigiVader5Pro)
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(vader_names, vec![VADER5_DEFAULT_PROFILE.to_string()]);
+        let sony_names: Vec<_> = pm
+            .list_profiles_for(ControllerKind::DualSense)
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(sony_names, vec!["Edge".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn profile_name_conflicts_are_family_aware() {
         let dualsense = Profile::default_for_device("Build".into(), ControllerKind::DualSense);
         let steam = Profile::default_for_device("Build".into(), ControllerKind::SteamController);
@@ -1365,23 +1534,34 @@ mod tests {
     }
 
     #[test]
-    fn conversion_resets_gyro_bias_only_across_families() {
-        let mut cross_family =
+    fn conversion_resets_gyro_bias_only_across_profile_groups() {
+        let mut cross_group =
             Profile::default_for_device("Cross".into(), ControllerKind::DualSense);
-        cross_family.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
+        cross_group.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
 
-        cross_family.convert_to_device(ControllerKind::EightBitDoPro3);
+        cross_group.convert_to_device(ControllerKind::EightBitDoPro3);
 
-        assert_eq!(cross_family.device, ControllerKind::EightBitDoPro3);
-        assert_eq!(cross_family.gyro_mouse.bias_dps, [0.0; 3]);
+        assert_eq!(cross_group.device, ControllerKind::EightBitDoPro3);
+        assert_eq!(cross_group.gyro_mouse.bias_dps, [0.0; 3]);
 
-        let mut same_family = Profile::default_for_device("Same".into(), ControllerKind::DualSense);
-        same_family.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
+        let mut same_group = Profile::default_for_device("Same".into(), ControllerKind::DualSense);
+        same_group.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
 
-        same_family.convert_to_device(ControllerKind::DualSenseEdge);
+        same_group.convert_to_device(ControllerKind::DualSenseEdge);
 
-        assert_eq!(same_family.device, ControllerKind::DualSenseEdge);
-        assert_eq!(same_family.gyro_mouse.bias_dps, [0.6, -0.05, -0.4]);
+        assert_eq!(same_group.device, ControllerKind::DualSenseEdge);
+        assert_eq!(same_group.gyro_mouse.bias_dps, [0.6, -0.05, -0.4]);
+
+        let mut flydigi = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiApex5,
+        );
+        flydigi.gyro_mouse.bias_dps = [0.6, -0.05, -0.4];
+
+        flydigi.convert_to_device(ControllerKind::FlydigiVader5Pro);
+
+        assert_eq!(flydigi.device, ControllerKind::FlydigiVader5Pro);
+        assert_eq!(flydigi.gyro_mouse.bias_dps, [0.0; 3]);
     }
 
     #[test]
@@ -1394,6 +1574,9 @@ mod tests {
             "SteamDefault",
             LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
             EIGHTBITDO_DEFAULT_PROFILE,
+            APEX5_DEFAULT_PROFILE,
+            VADER5_DEFAULT_PROFILE,
+            TARANTULA_DEFAULT_PROFILE,
         ] {
             assert!(pm.delete_profile(name).is_err(), "{name} must be protected");
         }
@@ -1494,6 +1677,29 @@ mod tests {
 
         assert!(err.to_string().contains("default profile"));
         assert!(pm.profile_exists("Default"));
+        assert!(!pm.profile_exists("Mine"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_profile_rejects_vader5_default() {
+        let dir = temp_profiles_dir("rename-vader5-default");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let default = Profile::default_for_device(
+            VADER5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        pm.save_profile(&default).expect("save Vader 5 default");
+
+        let err = pm
+            .rename_profile(VADER5_DEFAULT_PROFILE, "Mine")
+            .expect_err("canonical Vader 5 default must be protected");
+
+        assert!(err.to_string().contains("default profile"));
+        assert!(pm.profile_exists(VADER5_DEFAULT_PROFILE));
         assert!(!pm.profile_exists("Mine"));
 
         let _ = fs::remove_dir_all(&dir);
@@ -1603,6 +1809,28 @@ mod tests {
 
         assert!(err.to_string().contains("default profile"));
         assert!(pm.profile_exists(EIGHTBITDO_DEFAULT_PROFILE));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_profile_rejects_apex5_default() {
+        let dir = temp_profiles_dir("delete-apex5-default");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let default = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiApex5,
+        );
+        pm.save_profile(&default).expect("save Apex 5 default");
+
+        let err = pm
+            .delete_profile(APEX5_DEFAULT_PROFILE)
+            .expect_err("canonical Apex 5 default must be protected");
+
+        assert!(err.to_string().contains("default profile"));
+        assert!(pm.profile_exists(APEX5_DEFAULT_PROFILE));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1739,12 +1967,237 @@ mod tests {
             (ControllerKind::DualSenseEdge, "Default"),
             (ControllerKind::SteamController, "SteamDefault"),
             (ControllerKind::EightBitDoPro3, EIGHTBITDO_DEFAULT_PROFILE),
+            (ControllerKind::FlydigiApex5, APEX5_DEFAULT_PROFILE),
+            (ControllerKind::FlydigiVader5Pro, VADER5_DEFAULT_PROFILE),
+            (
+                ControllerKind::GameSirTarantulaPro,
+                TARANTULA_DEFAULT_PROFILE,
+            ),
         ] {
             let profile = pm.ensure_default_for(kind);
             assert_eq!(profile.name, name);
             assert!(profile.matches_device(kind));
             assert!(pm.profile_exists(name));
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_flydigi_defaults_copies_shared_apex_profile_to_vader() {
+        let dir = temp_profiles_dir("flydigi-copy");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let mut shared = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        shared.lightbar_r = 0.42;
+        shared.gyro_mouse.dots_per_360 = 1234.0;
+        shared.gyro_mouse.bias_dps = [0.5, -0.25, 1.0];
+        shared.press_timing.long_press_ms = 450;
+        shared.eightbitdo_abxy_layout = AbxyLayout::Switch;
+        shared
+            .button_bindings
+            .insert(Button::ApexLM, vec![slot(Binding::Gamepad(Button::L1))]);
+        shared.button_bindings.insert(
+            Button::VaderC,
+            vec![slot(Binding::Key(crate::remap::Key::new("C").unwrap()))],
+        );
+        shared.layers.push(Layer {
+            activator: Button::L1,
+            bindings: HashMap::from([(
+                Button::Circle,
+                vec![slot(Binding::Gamepad(Button::Square))],
+            )]),
+        });
+        pm.save_profile(&shared).expect("save shared default");
+        let bindings = shared.button_bindings.clone();
+        let layers = shared.layers.clone();
+
+        pm.migrate_flydigi_defaults();
+
+        let apex = pm
+            .load_profile(APEX5_DEFAULT_PROFILE)
+            .expect("load normalized Apex default");
+        assert_eq!(apex.name, APEX5_DEFAULT_PROFILE);
+        assert_eq!(apex.device, ControllerKind::FlydigiApex5);
+        assert_eq!(apex.gyro_mouse.bias_dps, [0.0; 3]);
+        assert_eq!(apex.button_bindings, bindings);
+        assert_eq!(apex.layers, layers);
+        assert_eq!(apex.lightbar_r, 0.42);
+        assert_eq!(apex.gyro_mouse.dots_per_360, 1234.0);
+        assert_eq!(apex.press_timing.long_press_ms, 450);
+        assert_eq!(apex.eightbitdo_abxy_layout, AbxyLayout::Switch);
+        assert!(
+            apex.button_bindings.contains_key(&Button::VaderC),
+            "Vader-only bindings stay in the Apex clone"
+        );
+
+        let vader = pm
+            .load_profile(VADER5_DEFAULT_PROFILE)
+            .expect("load copied Vader default");
+        assert_eq!(vader.name, VADER5_DEFAULT_PROFILE);
+        assert_eq!(vader.device, ControllerKind::FlydigiVader5Pro);
+        assert_eq!(vader.gyro_mouse.bias_dps, [0.0; 3]);
+        assert_eq!(vader.button_bindings, bindings);
+        assert_eq!(vader.layers, layers);
+        assert_eq!(vader.lightbar_r, 0.42);
+        assert_eq!(vader.gyro_mouse.dots_per_360, 1234.0);
+        assert_eq!(vader.press_timing.long_press_ms, 450);
+        assert_eq!(vader.eightbitdo_abxy_layout, AbxyLayout::Switch);
+        assert!(vader.button_bindings.contains_key(&Button::VaderC));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flipped_apex_default_is_normalized_and_seeds_vader() {
+        let dir = temp_profiles_dir("flydigi-normalize");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let mut flipped = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        flipped.gyro_mouse.bias_dps = [0.1, 0.2, 0.3];
+        pm.save_profile(&flipped).expect("save flipped default");
+
+        let apex = pm.ensure_default_for(ControllerKind::FlydigiApex5);
+
+        assert_eq!(apex.name, APEX5_DEFAULT_PROFILE);
+        assert_eq!(apex.device, ControllerKind::FlydigiApex5);
+        assert_eq!(apex.gyro_mouse.bias_dps, [0.0; 3]);
+        let reloaded = pm
+            .load_profile(APEX5_DEFAULT_PROFILE)
+            .expect("normalized file persists");
+        assert_eq!(reloaded.device, ControllerKind::FlydigiApex5);
+        let vader = pm
+            .load_profile(VADER5_DEFAULT_PROFILE)
+            .expect("Vader default seeded from normalized Apex");
+        assert_eq!(vader.device, ControllerKind::FlydigiVader5Pro);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_flydigi_defaults_is_idempotent_and_keeps_existing_vader() {
+        let dir = temp_profiles_dir("flydigi-idempotent");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let apex = Profile::default_for_device(
+            APEX5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiApex5,
+        );
+        let mut existing = Profile::default_for_device(
+            VADER5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        existing.lightbar_g = 0.9;
+        existing
+            .button_bindings
+            .insert(Button::VaderZ, vec![slot(Binding::Gamepad(Button::L2))]);
+        pm.save_profile(&apex).expect("save Apex default");
+        pm.save_profile(&existing)
+            .expect("save existing Vader default");
+        let apex_path = dir.join(format!("{APEX5_DEFAULT_PROFILE}.json"));
+        let vader_path = dir.join(format!("{VADER5_DEFAULT_PROFILE}.json"));
+        let apex_before = fs::read_to_string(&apex_path).expect("read Apex default");
+        let vader_before = fs::read_to_string(&vader_path).expect("read Vader default");
+
+        pm.migrate_flydigi_defaults();
+        pm.migrate_flydigi_defaults();
+
+        assert_eq!(
+            fs::read_to_string(&apex_path).expect("read Apex default"),
+            apex_before,
+            "normalized Apex file is not rewritten"
+        );
+        assert_eq!(
+            fs::read_to_string(&vader_path).expect("read Vader default"),
+            vader_before,
+            "an existing Vader default is never overwritten"
+        );
+        let kept = pm
+            .load_profile(VADER5_DEFAULT_PROFILE)
+            .expect("load preserved Vader default");
+        assert_eq!(kept.lightbar_g, 0.9);
+        assert_eq!(
+            kept.button_bindings.get(&Button::VaderZ),
+            existing.button_bindings.get(&Button::VaderZ)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_default_for_vader_creates_a_fresh_default_without_apex() {
+        let dir = temp_profiles_dir("flydigi-fresh-vader");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+
+        let vader = pm.ensure_default_for(ControllerKind::FlydigiVader5Pro);
+
+        assert_eq!(vader.name, VADER5_DEFAULT_PROFILE);
+        assert_eq!(vader.device, ControllerKind::FlydigiVader5Pro);
+        assert!(pm.profile_exists(VADER5_DEFAULT_PROFILE));
+        assert!(!pm.profile_exists(APEX5_DEFAULT_PROFILE));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_profile_rejects_vader5_default() {
+        let dir = temp_profiles_dir("delete-vader5-default");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+        let default = Profile::default_for_device(
+            VADER5_DEFAULT_PROFILE.to_string(),
+            ControllerKind::FlydigiVader5Pro,
+        );
+        pm.save_profile(&default).expect("save Vader 5 default");
+
+        let err = pm
+            .delete_profile(VADER5_DEFAULT_PROFILE)
+            .expect_err("canonical Vader 5 default must be protected");
+
+        assert!(err.to_string().contains("default profile"));
+        assert!(pm.profile_exists(VADER5_DEFAULT_PROFILE));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_default_for_keeps_apex_and_vader_defaults_separate() {
+        let dir = temp_profiles_dir("flydigi-separate-defaults");
+        let pm = ProfileManager {
+            profiles_dir: dir.clone(),
+        };
+
+        let apex = pm.ensure_default_for(ControllerKind::FlydigiApex5);
+        let vader = pm.ensure_default_for(ControllerKind::FlydigiVader5Pro);
+
+        assert_eq!(apex.name, APEX5_DEFAULT_PROFILE);
+        assert_eq!(vader.name, VADER5_DEFAULT_PROFILE);
+        assert!(pm.profile_exists(APEX5_DEFAULT_PROFILE));
+        assert!(pm.profile_exists(VADER5_DEFAULT_PROFILE));
+        assert_eq!(
+            pm.load_profile(APEX5_DEFAULT_PROFILE)
+                .expect("load Apex default")
+                .device,
+            ControllerKind::FlydigiApex5
+        );
+        assert_eq!(
+            pm.load_profile(VADER5_DEFAULT_PROFILE)
+                .expect("load Vader default")
+                .device,
+            ControllerKind::FlydigiVader5Pro
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

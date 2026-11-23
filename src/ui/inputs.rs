@@ -21,6 +21,14 @@ impl DS4UApp {
             self.render_eightbitdo_inputs_section(ui);
             return;
         }
+        if self.is_flydigi() {
+            self.render_flydigi_inputs_section(ui);
+            return;
+        }
+        if self.is_gamesir() {
+            self.render_gamesir_inputs_section(ui);
+            return;
+        }
         let c = &self.theme.colors;
         ui.add_space(20.0);
         ui.vertical_centered(|ui| {
@@ -336,6 +344,77 @@ impl DS4UApp {
                 self.abxy_layout(),
                 c,
             );
+        });
+    }
+
+    pub(crate) fn render_flydigi_inputs_section(&self, ui: &mut Ui) {
+        let c = &self.theme.colors;
+        let kind = self.controller_kind.unwrap_or(ControllerKind::FlydigiApex5);
+        ui.add_space(20.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("LIVE VISUALISATION")
+                    .size(15.0)
+                    .strong()
+                    .color(c.accent())
+                    .extra_letter_spacing(2.0),
+            );
+            ui.label(
+                RichText::new(format!("{} physical state (pre-remap)", kind.label()))
+                    .size(12.0)
+                    .italics()
+                    .color(c.text_dim()),
+            );
+        });
+        ui.add_space(20.0);
+
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let state = self.input.controller_state.unwrap_or_default();
+        ui.vertical_centered(|ui| {
+            if kind.is_vader5() {
+                let height = width * crate::ui::vader5_layout::VIEWBOX_H
+                    / crate::ui::vader5_layout::VIEWBOX_W;
+                let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::hover());
+                let layout = crate::ui::vader5_layout::Vader5Layout::fit(response.rect);
+                crate::ui::vader5::paint(ui, &painter, &layout, Some(&state), None, None, c);
+            } else {
+                let height =
+                    width * crate::ui::apex5_layout::VIEWBOX_H / crate::ui::apex5_layout::VIEWBOX_W;
+                let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::hover());
+                let layout = crate::ui::apex5_layout::Apex5Layout::fit(response.rect);
+                crate::ui::apex5::paint(ui, &painter, &layout, Some(&state), None, None, c);
+            }
+        });
+    }
+
+    pub(crate) fn render_gamesir_inputs_section(&self, ui: &mut Ui) {
+        let c = &self.theme.colors;
+        ui.add_space(20.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("LIVE VISUALISATION")
+                    .size(15.0)
+                    .strong()
+                    .color(c.accent())
+                    .extra_letter_spacing(2.0),
+            );
+            ui.label(
+                RichText::new("GameSir Tarantula Pro physical state (pre-remap)")
+                    .size(12.0)
+                    .italics()
+                    .color(c.text_dim()),
+            );
+        });
+        ui.add_space(20.0);
+
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let state = self.input.controller_state.unwrap_or_default();
+        ui.vertical_centered(|ui| {
+            let height = width * crate::ui::tarantula_layout::VIEWBOX_H
+                / crate::ui::tarantula_layout::VIEWBOX_W;
+            let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::hover());
+            let layout = crate::ui::tarantula_layout::TarantulaLayout::fit(response.rect);
+            crate::ui::tarantula::paint(ui, &painter, &layout, Some(&state), None, None, c);
         });
     }
 

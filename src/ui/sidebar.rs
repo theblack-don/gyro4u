@@ -90,12 +90,17 @@ impl DS4UApp {
                     .any(|row| row.family == ControllerFamily::Steam && row.live)
         });
         let label = current
-            .map(ControllerFamily::label)
-            .unwrap_or("Controllers");
+            .and_then(|family| {
+                rows.iter()
+                    .find(|row| row.family == family)
+                    .map(|row| row.label.clone())
+            })
+            .or_else(|| current.map(|family| family.label().to_string()))
+            .unwrap_or_else(|| "Controllers".to_string());
         let font = egui::FontId::proportional(14.0);
         let galley = ui
             .painter()
-            .layout_no_wrap(label.to_string(), font.clone(), c.text());
+            .layout_no_wrap(label.clone(), font.clone(), c.text());
         let width = (galley.size().x + 60.0).clamp(120.0, 220.0);
         let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), Sense::click());
         let response = response.on_hover_text(match pending_other {
@@ -183,14 +188,11 @@ impl DS4UApp {
                 ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
                 ui.set_min_width(284.0);
 
-                let active_row = current.and_then(|family| {
-                    rows.iter()
-                        .find(|row| row.family == family)
-                        .map(|row| (row, family))
-                });
-                if let Some((row, family)) = active_row {
+                let active_row =
+                    current.and_then(|family| rows.iter().find(|row| row.family == family));
+                if let Some(row) = active_row {
                     let detail = row.transport.as_deref().unwrap_or("connected");
-                    let _ = switcher_row(ui, &c, family.label(), detail, true);
+                    let _ = switcher_row(ui, &c, &row.label, detail, true);
                 } else if let Some(family) = current {
                     let _ = switcher_row(ui, &c, family.label(), "connected", true);
                 }
@@ -218,7 +220,7 @@ impl DS4UApp {
                                 .transport
                                 .clone()
                                 .unwrap_or_else(|| "detected".to_string());
-                            (row.family.label().to_string(), transport)
+                            (row.label.clone(), transport)
                         };
                     if switcher_row(ui, &c, &title, &detail, false) {
                         switch_to = Some(row.family.preference());
@@ -243,7 +245,7 @@ impl DS4UApp {
                     ui,
                     &c,
                     "Automatic",
-                    "DualSense preferred; Steam then 8BitDo",
+                    "DualSense preferred; Steam, 8BitDo, Flydigi, then GameSir",
                     preference == ControllerPreference::Auto,
                 ) {
                     switch_to = Some(ControllerPreference::Auto);
@@ -296,7 +298,7 @@ impl DS4UApp {
                     | Section::Advanced
             );
         }
-        if self.is_eightbitdo() {
+        if self.is_eightbitdo() || self.is_flydigi() || self.is_gamesir() {
             return !matches!(
                 section,
                 Section::Triggers

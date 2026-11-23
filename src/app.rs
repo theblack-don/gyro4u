@@ -98,6 +98,7 @@ pub(crate) struct DS4UApp {
     pub(crate) profile_rename_from: Option<String>,
     pub(crate) profile_rename_name: String,
     pub(crate) profile_delete_confirm: Option<String>,
+    pub(crate) profile_filter: ProfileFilter,
 
     daemon_manager: DaemonManager,
 
@@ -180,6 +181,7 @@ impl DS4UApp {
             profile_rename_from: None,
             profile_rename_name: String::new(),
             profile_delete_confirm: None,
+            profile_filter: ProfileFilter::Current,
 
             daemon_manager: DaemonManager::new(),
 
@@ -442,6 +444,8 @@ impl DS4UApp {
             dualsense: self.inventory_has(ControllerFamily::DualSense),
             steam: self.inventory_has(ControllerFamily::Steam),
             eightbitdo: self.inventory_has(ControllerFamily::EightBitDo),
+            flydigi: self.inventory_has(ControllerFamily::Flydigi),
+            gamesir: self.inventory_has(ControllerFamily::GameSir),
         }
     }
     fn inventory_has(&self, family: ControllerFamily) -> bool {
@@ -560,7 +564,10 @@ impl DS4UApp {
         if current.is_some_and(|profile| profile.matches_device(kind)) {
             return;
         }
-        let remembered = self.settings.remembered_profile(kind.family()).to_string();
+        let remembered = self
+            .settings
+            .remembered_profile(kind.profile_group())
+            .to_string();
         let loaded = if self.profile_manager.profile_exists(&remembered) {
             self.profile_manager
                 .load_profile(&remembered)
@@ -860,6 +867,18 @@ impl DS4UApp {
                     "Raw haptics are not supported on the 8BitDo Pro 3; use the rumble test"
                         .to_string()
                 }
+                Some(kind) if kind.is_flydigi() => {
+                    format!(
+                        "Raw haptics are not supported on the {}; use the rumble test",
+                        kind.label()
+                    )
+                }
+                Some(kind) if kind.is_gamesir() => {
+                    format!(
+                        "Raw haptics are not supported on the {}; use the rumble test",
+                        kind.label()
+                    )
+                }
                 _ => "Raw haptics are not implemented for this controller".to_string(),
             };
             return;
@@ -972,6 +991,16 @@ impl DS4UApp {
     pub(crate) fn is_eightbitdo(&self) -> bool {
         self.capabilities()
             .is_some_and(|caps| caps.kind.is_eightbitdo())
+    }
+
+    pub(crate) fn is_flydigi(&self) -> bool {
+        self.capabilities()
+            .is_some_and(|caps| caps.kind.is_flydigi())
+    }
+
+    pub(crate) fn is_gamesir(&self) -> bool {
+        self.capabilities()
+            .is_some_and(|caps| caps.kind.is_gamesir())
     }
 
     pub(crate) fn abxy_layout(&self) -> crate::inputs::AbxyLayout {
@@ -1154,7 +1183,7 @@ impl DS4UApp {
         self.current_profile = Some(profile.clone());
 
         self.settings
-            .remember_profile(profile.device.family(), &profile.name);
+            .remember_profile(profile.device.profile_group(), &profile.name);
         self.settings_manager.save(&self.settings);
 
         self.apply_lightbar();
@@ -1277,7 +1306,7 @@ impl DS4UApp {
             self.refresh_controller_inventory();
         }
 
-        if self.is_steam()
+        if (self.is_steam() || self.is_gamesir())
             && !self.using_daemon()
             && self.input.polling
             && self.input.last_state_at.elapsed() > Duration::from_secs(2)
@@ -1795,20 +1824,20 @@ impl DS4UApp {
             let message = match profile_name_conflict(existing.as_ref(), kind) {
                 ProfileNameConflict::SameFamily => format!(
                     "A {} profile named '{}' already exists; choose another name",
-                    controller::family_of_kind(kind).label(),
+                    kind.label(),
                     name
                 ),
                 ProfileNameConflict::OtherFamily => {
                     let other = existing
                         .as_ref()
-                        .map(|profile| controller::family_of_kind(profile.device).label())
-                        .unwrap_or("other family");
+                        .map(|profile| profile.device.label())
+                        .unwrap_or("another controller");
                     self.profile_convert_offer = Some(name.to_string());
                     format!(
                         "'{}' already exists for {}; convert it to {} in All Profiles",
                         name,
                         other,
-                        controller::family_of_kind(kind).label()
+                        kind.label()
                     )
                 }
                 ProfileNameConflict::None => format!(
@@ -1862,7 +1891,7 @@ impl DS4UApp {
         }
         if ProfileManager::is_default_profile_name(&profile.name) {
             return Err(format!(
-                "'{}' is a default profile and cannot be converted across controller families; \
+                "'{}' is a default profile and cannot be converted across controllers; \
                  create a new profile with a different name and convert that instead.",
                 profile.name
             ));
@@ -1935,9 +1964,9 @@ impl DS4UApp {
         {
             current.name = new.to_string();
         }
-        let family = profile.device.family();
-        if self.settings.remembered_profile(family) == old {
-            self.settings.remember_profile(family, new);
+        let group = profile.device.profile_group();
+        if self.settings.remembered_profile(group) == old {
+            self.settings.remember_profile(group, new);
             self.settings_manager.save(&self.settings);
         }
         Ok(())

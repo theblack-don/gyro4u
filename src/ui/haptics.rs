@@ -2,6 +2,7 @@ use egui::{Color32, CornerRadius, Pos2, RichText, Sense, Stroke, StrokeKind, Ui,
 
 use crate::app::DS4UApp;
 use crate::common::HapticPattern;
+use crate::inputs::ControllerKind;
 use crate::theme::ThemeColors;
 use crate::ui::widgets::{ds_pill_button, ds_slider};
 
@@ -36,7 +37,7 @@ fn haptic_intensity(pattern: HapticPattern, strength: u8, speed: f32, elapsed: f
 }
 
 impl DS4UApp {
-    fn render_eightbitdo_haptics(&mut self, ui: &mut Ui) {
+    fn render_basic_rumble_haptics(&mut self, ui: &mut Ui, device_name: &str) {
         let c = self.theme.colors.clone();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -45,10 +46,10 @@ impl DS4UApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(crate::ui::widgets::ROW_PAD_X);
                     ui.label(
-                        RichText::new(
-                            "The 8BitDo Pro 3 exposes basic left/right rumble. Raw haptics, \
+                        RichText::new(format!(
+                            "The {device_name} exposes basic left/right rumble. Raw haptics, \
                              trigger rumble, and vibration attenuation are unavailable.",
-                        )
+                        ))
                         .size(12.0)
                         .italics()
                         .color(c.text_dim()),
@@ -135,7 +136,23 @@ impl DS4UApp {
 
     pub(crate) fn render_haptics_settings(&mut self, ui: &mut Ui) {
         if self.is_eightbitdo() {
-            self.render_eightbitdo_haptics(ui);
+            self.render_basic_rumble_haptics(ui, "8BitDo Pro 3");
+            return;
+        }
+        if self.is_flydigi() {
+            let label = self
+                .controller_kind
+                .unwrap_or(ControllerKind::FlydigiApex5)
+                .label();
+            self.render_basic_rumble_haptics(ui, label);
+            return;
+        }
+        if self.is_gamesir() {
+            let label = self
+                .controller_kind
+                .unwrap_or(ControllerKind::GameSirTarantulaPro)
+                .label();
+            self.render_basic_rumble_haptics(ui, label);
             return;
         }
         let c = self.theme.colors.clone();

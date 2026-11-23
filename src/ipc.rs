@@ -46,7 +46,7 @@ pub type DaemonStream = transport::Stream;
 pub type DaemonListener = transport::Listener;
 pub type ControllerInfoTuple = (String, u16, bool, ControllerKind, String);
 
-pub const IPC_PROTOCOL_VERSION: u32 = 8;
+pub const IPC_PROTOCOL_VERSION: u32 = 12;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -702,10 +702,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_eight_rejects_a_protocol_seven_daemon() {
-        assert_eq!(IPC_PROTOCOL_VERSION, 8);
+    fn protocol_twelve_rejects_a_protocol_eleven_daemon() {
+        assert_eq!(IPC_PROTOCOL_VERSION, 12);
         assert!(incompatible(Ok(DaemonResponse::Pong {
-            protocol: 7,
+            protocol: 11,
             app_version: "0.2.0".to_string(),
         })));
     }
@@ -768,6 +768,56 @@ mod tests {
         .expect("serialize");
         assert!(json.contains("\"protocol\""));
         assert!(json.contains("\"app_version\""));
+    }
+
+    #[test]
+    fn vader5_controller_kind_round_trips() {
+        let response = DaemonResponse::ControllerInfo {
+            serial: "FLYDIGI-SERIAL".to_string(),
+            product_id: crate::apex5::VADER5_PID,
+            is_bt: false,
+            kind: crate::inputs::ControllerKind::FlydigiVader5Pro,
+            transport: "USB".to_string(),
+        };
+        let json = serde_json::to_string(&response).expect("serialize controller info");
+        match serde_json::from_str::<DaemonResponse>(&json).expect("deserialize controller info") {
+            DaemonResponse::ControllerInfo { kind, .. } => {
+                assert_eq!(kind, crate::inputs::ControllerKind::FlydigiVader5Pro);
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
+    fn gamesir_kind_and_preference_round_trip() {
+        let response = DaemonResponse::ControllerInfo {
+            serial: "GAMESIR-SERIAL".to_string(),
+            product_id: crate::gamesir::TARANTULA_PRO_PID,
+            is_bt: false,
+            kind: crate::inputs::ControllerKind::GameSirTarantulaPro,
+            transport: "2.4 GHz".to_string(),
+        };
+        let json = serde_json::to_string(&response).expect("serialize controller info");
+        match serde_json::from_str::<DaemonResponse>(&json).expect("deserialize controller info") {
+            DaemonResponse::ControllerInfo {
+                kind, transport, ..
+            } => {
+                assert_eq!(kind, crate::inputs::ControllerKind::GameSirTarantulaPro);
+                assert_eq!(transport, "2.4 GHz");
+            }
+            _ => panic!("unexpected response"),
+        }
+
+        let command = serde_json::to_string(&DaemonCommand::SetControllerPreference {
+            preference: crate::settings::ControllerPreference::GameSir,
+        })
+        .expect("serialize preference");
+        match serde_json::from_str::<DaemonCommand>(&command).expect("deserialize preference") {
+            DaemonCommand::SetControllerPreference { preference } => {
+                assert_eq!(preference, crate::settings::ControllerPreference::GameSir);
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 
     #[test]

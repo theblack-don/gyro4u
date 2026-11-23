@@ -10,6 +10,8 @@ use crate::inputs::ControllerState;
 use crate::state::Section;
 use crate::style::apply_style;
 
+pub mod apex5;
+pub mod apex5_layout;
 pub mod audio;
 pub mod eightbitdo;
 pub mod eightbitdo_layout;
@@ -19,6 +21,8 @@ pub mod haptics;
 pub mod inputs;
 pub mod lightbar;
 pub mod mapping;
+#[cfg(test)]
+mod model_art_tests;
 pub mod navigation;
 pub mod profiles;
 pub mod settings;
@@ -26,8 +30,12 @@ pub mod sidebar;
 pub mod steam;
 pub mod steam_layout;
 pub mod sticks;
+pub mod tarantula;
+pub mod tarantula_layout;
 pub mod touchpad;
 pub mod triggers;
+pub mod vader5;
+pub mod vader5_layout;
 pub mod widgets;
 
 impl DS4UApp {
@@ -76,8 +84,9 @@ impl DS4UApp {
             ui.label(
                 RichText::new(
                     "DualSense / DualSense Edge via USB or Bluetooth, Steam Controller (2026) \
-                     via USB, Bluetooth, or puck/receiver, or 8BitDo Pro 3 via USB-C or \
-                     Bluetooth in D mode",
+                     via USB, Bluetooth, or puck/receiver, 8BitDo Pro 3 via USB-C or \
+                     Bluetooth in D mode, or GameSir Tarantula Pro via its 2.4 GHz dongle in \
+                     XInput/PC mode",
                 )
                 .size(16.0)
                 .color(c.text_dim()),

@@ -216,6 +216,191 @@ const EIGHTBITDO_GROUPS: &[(&str, &[Button])] = &[
     ),
 ];
 
+const APEX5_GROUPS: &[(&str, &[Button])] = &[
+    (
+        "Face Buttons",
+        &[
+            Button::Cross,
+            Button::Circle,
+            Button::Square,
+            Button::Triangle,
+        ],
+    ),
+    (
+        "D-Pad",
+        &[
+            Button::DPadUp,
+            Button::DPadRight,
+            Button::DPadDown,
+            Button::DPadLeft,
+        ],
+    ),
+    (
+        "Shoulders & Triggers",
+        &[Button::L1, Button::R1, Button::L2, Button::R2],
+    ),
+    ("Sticks", &[Button::L3, Button::R3]),
+    (
+        "Left Stick (Digital)",
+        &[
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+        ],
+    ),
+    (
+        "Right Stick (Digital)",
+        &[
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ],
+    ),
+    ("System", &[Button::Create, Button::Options, Button::PS]),
+    (
+        "Extra Buttons",
+        &[
+            Button::ApexLM,
+            Button::ApexRM,
+            Button::ApexM1,
+            Button::ApexM2,
+            Button::ApexM3,
+            Button::ApexM4,
+        ],
+    ),
+];
+
+const VADER5_GROUPS: &[(&str, &[Button])] = &[
+    (
+        "Face Buttons",
+        &[
+            Button::Cross,
+            Button::Circle,
+            Button::Square,
+            Button::Triangle,
+        ],
+    ),
+    (
+        "D-Pad",
+        &[
+            Button::DPadUp,
+            Button::DPadRight,
+            Button::DPadDown,
+            Button::DPadLeft,
+        ],
+    ),
+    (
+        "Shoulders & Triggers",
+        &[Button::L1, Button::R1, Button::L2, Button::R2],
+    ),
+    ("Sticks", &[Button::L3, Button::R3]),
+    (
+        "Left Stick (Digital)",
+        &[
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+        ],
+    ),
+    (
+        "Right Stick (Digital)",
+        &[
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ],
+    ),
+    ("System", &[Button::Create, Button::Options, Button::PS]),
+    (
+        "Extra Buttons",
+        &[
+            Button::VaderC,
+            Button::VaderZ,
+            Button::VaderCircle,
+            Button::ApexLM,
+            Button::ApexRM,
+            Button::ApexM1,
+            Button::ApexM2,
+            Button::ApexM3,
+            Button::ApexM4,
+        ],
+    ),
+];
+
+const TARANTULA_GROUPS: &[(&str, &[Button])] = &[
+    (
+        "Face Buttons",
+        &[
+            Button::Cross,
+            Button::Circle,
+            Button::Square,
+            Button::Triangle,
+        ],
+    ),
+    (
+        "D-Pad",
+        &[
+            Button::DPadUp,
+            Button::DPadRight,
+            Button::DPadDown,
+            Button::DPadLeft,
+        ],
+    ),
+    (
+        "Shoulders & Triggers",
+        &[Button::L1, Button::R1, Button::L2, Button::R2],
+    ),
+    ("Sticks", &[Button::L3, Button::R3]),
+    (
+        "Left Stick (Digital)",
+        &[
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+        ],
+    ),
+    (
+        "Right Stick (Digital)",
+        &[
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ],
+    ),
+    (
+        "System",
+        &[
+            Button::Create,
+            Button::Options,
+            Button::PS,
+            Button::GameSirShare,
+        ],
+    ),
+    (
+        "Top Buttons T1-T3",
+        &[Button::GameSirT1, Button::GameSirT2, Button::GameSirT3],
+    ),
+    (
+        "Front Buttons C1-C4",
+        &[
+            Button::GameSirC1,
+            Button::GameSirC2,
+            Button::GameSirC3,
+            Button::GameSirC4,
+        ],
+    ),
+    (
+        "Rear Buttons L4/R4",
+        &[Button::GameSirL4, Button::GameSirR4],
+    ),
+];
+
 const STANDARD_HOTSPOTS: &[(Button, (f32, f32), f32)] = &[
     (Button::Square, SVG_SQUARE, 3.2),
     (Button::Cross, SVG_CROSS, 3.2),
@@ -476,6 +661,21 @@ impl DS4UApp {
                         "Click a control on the diagram or a row below to open the editor \
                          popup. L4/R4 and PL/PR are Pro 3 extras; Star and Profile are \
                          on-controller functions and are not host inputs."
+                    } else if self.is_gamesir() {
+                        "Click a control on the diagram or a row below to open the editor \
+                         popup. T1-T3 are the top-center buttons, C1-C4 are the top-front row, \
+                         and L4/R4 are the rear buttons. Share is a distinct host input; the \
+                         M button is an on-controller function and is not a host input."
+                    } else if self.controller_kind == Some(ControllerKind::FlydigiVader5Pro) {
+                        "Click a control on the diagram or a row below to open the editor \
+                         popup. C, Z, and Circle are extra face buttons; LM/RM are the extra \
+                         top bumpers; M1-M4 are the four rear buttons. The screen and \
+                         on-controller profile controls are not host inputs."
+                    } else if self.is_flydigi() {
+                        "Click a control on the diagram or a row below to open the editor \
+                         popup. LM/RM are the extra top bumpers; M1-M4 are the four rear \
+                         buttons. The screen and on-controller profile controls are not \
+                         host inputs."
                     } else {
                         "Click a control on the diagram or a row below to open the editor \
                          popup. Unbound controls pass through unchanged. Dashed markers \
@@ -489,6 +689,14 @@ impl DS4UApp {
                     STEAM_GROUPS
                 } else if self.is_eightbitdo() {
                     EIGHTBITDO_GROUPS
+                } else if self.is_gamesir() {
+                    TARANTULA_GROUPS
+                } else if self.is_flydigi() {
+                    if self.controller_kind == Some(ControllerKind::FlydigiVader5Pro) {
+                        VADER5_GROUPS
+                    } else {
+                        APEX5_GROUPS
+                    }
                 } else {
                     GROUPS
                 };
@@ -728,6 +936,14 @@ impl DS4UApp {
         }
         if self.is_eightbitdo() {
             self.render_eightbitdo_mapping_diagram(ui, c);
+            return;
+        }
+        if self.is_gamesir() {
+            self.render_gamesir_mapping_diagram(ui, c);
+            return;
+        }
+        if self.is_flydigi() {
+            self.render_flydigi_mapping_diagram(ui, c);
             return;
         }
         let side = ui.available_width().min(760.0).clamp(320.0, 620.0);
@@ -1137,6 +1353,190 @@ impl DS4UApp {
                     response.rect,
                     pointer,
                     button.device_label_with_layout(ControllerKind::EightBitDoPro3, abxy),
+                    c,
+                );
+            }
+
+            if let Some(p) = response
+                .clicked()
+                .then(|| response.interact_pointer_pos())
+                .flatten()
+                && let Some(button) = layout.hit_test(p)
+            {
+                self.remap.selected = Some(button);
+            }
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Physical: {}", label_list(&pressed)))
+                        .size(12.0)
+                        .color(c.text_dim()),
+                );
+            });
+        });
+    }
+
+    fn render_gamesir_mapping_diagram(&mut self, ui: &mut Ui, c: &ThemeColors) {
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let kind = ControllerKind::GameSirTarantulaPro;
+        let controller = self.input.controller_state;
+        let pressed: Vec<Button> = controller
+            .map(|s| {
+                ALL_BUTTONS
+                    .iter()
+                    .copied()
+                    .filter(|b| b.is_pressed(&s))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ui.vertical_centered(|ui| {
+            let height = width * crate::ui::tarantula_layout::VIEWBOX_H
+                / crate::ui::tarantula_layout::VIEWBOX_W;
+            let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::click());
+            let layout = crate::ui::tarantula_layout::TarantulaLayout::fit(response.rect);
+            let pointer = response.hover_pos();
+            let hovered = pointer.and_then(|p| layout.hit_test(p));
+            crate::ui::tarantula::paint(
+                ui,
+                &painter,
+                &layout,
+                controller.as_ref(),
+                self.remap.selected,
+                hovered,
+                c,
+            );
+
+            if let (Some(pointer), Some(button)) = (pointer, hovered) {
+                draw_hover_label(
+                    &painter,
+                    response.rect,
+                    pointer,
+                    button.device_label(kind),
+                    c,
+                );
+            }
+
+            if let Some(p) = response
+                .clicked()
+                .then(|| response.interact_pointer_pos())
+                .flatten()
+                && let Some(button) = layout.hit_test(p)
+            {
+                self.remap.selected = Some(button);
+            }
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Physical: {}", label_list(&pressed)))
+                        .size(12.0)
+                        .color(c.text_dim()),
+                );
+            });
+        });
+    }
+
+    fn render_flydigi_mapping_diagram(&mut self, ui: &mut Ui, c: &ThemeColors) {
+        if self.controller_kind == Some(ControllerKind::FlydigiVader5Pro) {
+            self.render_vader5_mapping_diagram(ui, c);
+            return;
+        }
+
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let kind = ControllerKind::FlydigiApex5;
+        let controller = self.input.controller_state;
+        let pressed: Vec<Button> = controller
+            .map(|s| {
+                ALL_BUTTONS
+                    .iter()
+                    .copied()
+                    .filter(|b| b.is_pressed(&s))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ui.vertical_centered(|ui| {
+            let height =
+                width * crate::ui::apex5_layout::VIEWBOX_H / crate::ui::apex5_layout::VIEWBOX_W;
+            let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::click());
+            let layout = crate::ui::apex5_layout::Apex5Layout::fit(response.rect);
+            let pointer = response.hover_pos();
+            let hovered = pointer.and_then(|p| layout.hit_test(p));
+            crate::ui::apex5::paint(
+                ui,
+                &painter,
+                &layout,
+                controller.as_ref(),
+                self.remap.selected,
+                hovered,
+                c,
+            );
+
+            if let (Some(pointer), Some(button)) = (pointer, hovered) {
+                draw_hover_label(
+                    &painter,
+                    response.rect,
+                    pointer,
+                    button.device_label(kind),
+                    c,
+                );
+            }
+
+            if let Some(p) = response
+                .clicked()
+                .then(|| response.interact_pointer_pos())
+                .flatten()
+                && let Some(button) = layout.hit_test(p)
+            {
+                self.remap.selected = Some(button);
+            }
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Physical: {}", label_list(&pressed)))
+                        .size(12.0)
+                        .color(c.text_dim()),
+                );
+            });
+        });
+    }
+
+    fn render_vader5_mapping_diagram(&mut self, ui: &mut Ui, c: &ThemeColors) {
+        let width = ui.available_width().min(760.0).clamp(320.0, 760.0);
+        let controller = self.input.controller_state;
+        let pressed: Vec<Button> = controller
+            .map(|s| {
+                ALL_BUTTONS
+                    .iter()
+                    .copied()
+                    .filter(|b| b.is_pressed(&s))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ui.vertical_centered(|ui| {
+            let height =
+                width * crate::ui::vader5_layout::VIEWBOX_H / crate::ui::vader5_layout::VIEWBOX_W;
+            let (response, painter) = ui.allocate_painter(vec2(width, height), Sense::click());
+            let layout = crate::ui::vader5_layout::Vader5Layout::fit(response.rect);
+            let pointer = response.hover_pos();
+            let hovered = pointer.and_then(|p| layout.hit_test(p));
+            crate::ui::vader5::paint(
+                ui,
+                &painter,
+                &layout,
+                controller.as_ref(),
+                self.remap.selected,
+                hovered,
+                c,
+            );
+
+            if let (Some(pointer), Some(button)) = (pointer, hovered) {
+                draw_hover_label(
+                    &painter,
+                    response.rect,
+                    pointer,
+                    button.device_label(ControllerKind::FlydigiVader5Pro),
                     c,
                 );
             }
@@ -1966,5 +2366,104 @@ fn label_list(buttons: &[Button]) -> String {
             .map(|b| b.label())
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn apex5_groups_cover_every_target_exactly_once() {
+        let mut counts: HashMap<Button, usize> = HashMap::new();
+        for (_, buttons) in APEX5_GROUPS {
+            for button in *buttons {
+                *counts.entry(*button).or_default() += 1;
+            }
+        }
+
+        for button in ControllerKind::FlydigiApex5.target_buttons() {
+            assert_eq!(
+                counts.get(button),
+                Some(&1),
+                "{} must appear in exactly one group",
+                button.label()
+            );
+        }
+        for dir in [
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ] {
+            assert_eq!(counts.get(&dir), Some(&1), "{dir:?} digital direction");
+        }
+    }
+
+    #[test]
+    fn vader5_groups_cover_every_target_exactly_once() {
+        let mut counts: HashMap<Button, usize> = HashMap::new();
+        for (_, buttons) in VADER5_GROUPS {
+            for button in *buttons {
+                *counts.entry(*button).or_default() += 1;
+            }
+        }
+
+        for button in ControllerKind::FlydigiVader5Pro.target_buttons() {
+            assert_eq!(
+                counts.get(button),
+                Some(&1),
+                "{} must appear in exactly one group",
+                button.label()
+            );
+        }
+        for dir in [
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ] {
+            assert_eq!(counts.get(&dir), Some(&1), "{dir:?} digital direction");
+        }
+    }
+
+    #[test]
+    fn tarantula_groups_cover_every_target_exactly_once() {
+        let mut counts: HashMap<Button, usize> = HashMap::new();
+        for (_, buttons) in TARANTULA_GROUPS {
+            for button in *buttons {
+                *counts.entry(*button).or_default() += 1;
+            }
+        }
+
+        for button in ControllerKind::GameSirTarantulaPro.target_buttons() {
+            assert_eq!(
+                counts.get(button),
+                Some(&1),
+                "{} must appear in exactly one group",
+                button.label()
+            );
+        }
+        for dir in [
+            Button::LeftStickUp,
+            Button::LeftStickDown,
+            Button::LeftStickLeft,
+            Button::LeftStickRight,
+            Button::RightStickUp,
+            Button::RightStickDown,
+            Button::RightStickLeft,
+            Button::RightStickRight,
+        ] {
+            assert_eq!(counts.get(&dir), Some(&1), "{dir:?} digital direction");
+        }
     }
 }

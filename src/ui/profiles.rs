@@ -1,17 +1,37 @@
 use egui::{Color32, RichText, TextEdit, Ui, vec2};
 
 use crate::app::DS4UApp;
-use crate::controller::family_of_kind;
-use crate::inputs::ControllerKind;
+use crate::inputs::{ControllerKind, ProfileGroup};
 use crate::profiles::ProfileManager;
+use crate::state::ProfileFilter;
 
 use super::widgets::{accent_alpha, ds_label, ds_pill_button, ds_row, ds_section, ds_value_text};
+
+fn filter_group(filter: ProfileFilter, current: Option<ControllerKind>) -> Option<ProfileGroup> {
+    match filter {
+        ProfileFilter::Current => current.map(|kind| kind.profile_group()),
+        ProfileFilter::All => None,
+        ProfileFilter::Group(group) => Some(group),
+    }
+}
+
+fn filter_label(filter: ProfileFilter, current: Option<ControllerKind>) -> String {
+    match filter {
+        ProfileFilter::Current => match current {
+            Some(kind) => format!("Current controller ({})", kind.label()),
+            None => "Current controller".to_string(),
+        },
+        ProfileFilter::All => "All controllers".to_string(),
+        ProfileFilter::Group(group) => group.label().to_string(),
+    }
+}
 
 impl DS4UApp {
     pub(crate) fn render_profiles_section(&mut self, ui: &mut Ui) {
         let c = self.theme.colors.clone();
-        let kind = self.controller_kind.unwrap_or(ControllerKind::DualSense);
-        let family = family_of_kind(kind);
+        let current_kind = self.controller_kind;
+        let kind = current_kind.unwrap_or(ControllerKind::DualSense);
+        let mut filter = self.profile_filter;
 
         let cur_name = self
             .current_profile
@@ -61,11 +81,11 @@ impl DS4UApp {
                     }
                 });
 
-                ds_section(ui, &c, &format!("Create for {}", family.label()));
+                ds_section(ui, &c, &format!("Create for {}", kind.label()));
                 ds_row(ui, |ui| {
                     ds_label(ui, "Creating for");
                     ui.label(
-                        RichText::new(family.label())
+                        RichText::new(kind.label())
                             .size(18.0)
                             .strong()
                             .color(c.accent()),
@@ -134,29 +154,83 @@ impl DS4UApp {
                 }
 
                 ds_section(ui, &c, "All Profiles");
+                ds_row(ui, |ui| {
+                    ds_label(ui, "Show");
+                    egui::ComboBox::from_id_salt("ds4u_profile_filter")
+                        .selected_text(filter_label(filter, current_kind))
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    filter == ProfileFilter::Current,
+                                    filter_label(ProfileFilter::Current, current_kind),
+                                )
+                                .clicked()
+                            {
+                                filter = ProfileFilter::Current;
+                            }
+                            if ui
+                                .selectable_label(
+                                    filter == ProfileFilter::All,
+                                    filter_label(ProfileFilter::All, current_kind),
+                                )
+                                .clicked()
+                            {
+                                filter = ProfileFilter::All;
+                            }
+                            ui.separator();
+                            for group in ProfileGroup::all() {
+                                if ui
+                                    .selectable_label(
+                                        filter == ProfileFilter::Group(group),
+                                        group.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    filter = ProfileFilter::Group(group);
+                                }
+                            }
+                        });
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(crate::ui::widgets::ROW_PAD_X);
                     ui.label(
                         RichText::new(
-                            "Converting a profile across controller families keeps its mappings; \
-                             gyro center calibration is reset and must be recalibrated on the new \
-                             controller. Family-specific buttons, pads, and features may become \
-                             inert.",
+                            "Converting a profile across controllers or models keeps its \
+                             mappings. Gyro center calibration is reset between profile groups \
+                             and must be recalibrated on the new controller. \
+                             Controller-specific buttons, pads, and features may become inert. \
+                             The Show filter is session-only and defaults to the connected \
+                             controller.",
                         )
                         .size(12.0)
                         .italics()
                         .color(c.text_dim()),
                     );
                 });
-                for profile in self.profile_manager.list_profiles() {
+                let group_filter = filter_group(filter, current_kind);
+                let profiles: Vec<_> = self
+                    .profile_manager
+                    .list_profiles()
+                    .into_iter()
+                    .filter(|profile| {
+                        group_filter.is_none_or(|group| profile.device.profile_group() == group)
+                    })
+                    .collect();
+                if profiles.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(crate::ui::widgets::ROW_PAD_X);
+                        ui.label(
+                            RichText::new("No profiles for this filter")
+                                .size(14.0)
+                                .color(c.text_dim()),
+                        );
+                    });
+                }
+                for profile in profiles {
                     let selected = profile.name == cur_name;
-                    let same_family = profile.matches_device(kind);
+                    let same_group = profile.matches_device(kind);
                     let name = profile.name.clone();
-                    let badge = match profile.device.family() {
-                        crate::inputs::ControllerFamily::DualSense => "DualSense",
-                        crate::inputs::ControllerFamily::Steam => "Steam",
-                        crate::inputs::ControllerFamily::EightBitDo => "8BitDo",
-                    };
+                    let badge = profile.device.label();
                     let can_delete = ProfileManager::default_profile_name(profile.device)
                         != profile.name.as_str();
                     ds_row(ui, |ui| {
@@ -182,14 +256,14 @@ impl DS4UApp {
                         );
                         ui.add_space(10.0);
 
-                        if same_family {
+                        if same_group {
                             if !selected && ds_pill_button(ui, &c, "Activate", false).clicked() {
                                 switch_to = Some(name.clone());
                             }
                         } else if ds_pill_button(
                             ui,
                             &c,
-                            &format!("Convert to {}", family.label()),
+                            &format!("Convert to {}", kind.label()),
                             false,
                         )
                         .clicked()
@@ -208,15 +282,16 @@ impl DS4UApp {
                         }
                         let tag = if selected {
                             "Active"
-                        } else if same_family {
+                        } else if same_group {
                             "Saved"
                         } else {
-                            "Other family"
+                            "Other controller"
                         };
                         ds_value_text(ui, tag);
                     });
                 }
             });
+        self.profile_filter = filter;
 
         if let Some(name) = self.profile_delete_confirm.clone() {
             let deletable = match self.profile_manager.load_profile(&name) {
@@ -333,7 +408,7 @@ impl DS4UApp {
         if let Some(name) = convert {
             match self.convert_profile(&name) {
                 Ok(()) => {
-                    self.status_message = format!("Converted '{}' to {}", name, family.label());
+                    self.status_message = format!("Converted '{}' to {}", name, kind.label());
                     self.profile_create_error.clear();
                     self.profile_convert_offer = None;
                 }
@@ -355,5 +430,41 @@ impl DS4UApp {
                 Err(e) => self.error_message = e,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_filter_follows_the_connected_controller_group() {
+        assert_eq!(
+            filter_group(
+                ProfileFilter::Current,
+                Some(ControllerKind::FlydigiVader5Pro)
+            ),
+            Some(ProfileGroup::FlydigiVader5Pro)
+        );
+        assert_eq!(
+            filter_group(ProfileFilter::Current, Some(ControllerKind::DualSenseEdge)),
+            Some(ProfileGroup::DualSense)
+        );
+        assert_eq!(filter_group(ProfileFilter::Current, None), None);
+    }
+
+    #[test]
+    fn all_and_explicit_group_filters_ignore_the_current_controller() {
+        assert_eq!(
+            filter_group(ProfileFilter::All, Some(ControllerKind::FlydigiVader5Pro)),
+            None
+        );
+        assert_eq!(
+            filter_group(
+                ProfileFilter::Group(ProfileGroup::FlydigiApex5),
+                Some(ControllerKind::FlydigiVader5Pro)
+            ),
+            Some(ProfileGroup::FlydigiApex5)
+        );
     }
 }

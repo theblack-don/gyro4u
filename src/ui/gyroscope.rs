@@ -41,11 +41,15 @@ impl ActivationKind {
         Self::Trigger,
     ];
     const EIGHTBITDO: [Self; 4] = [Self::Always, Self::Hold, Self::Toggle, Self::Trigger];
+    const FLYDIGI: [Self; 4] = [Self::Always, Self::Hold, Self::Toggle, Self::Trigger];
+    const GAMESIR: [Self; 4] = [Self::Always, Self::Hold, Self::Toggle, Self::Trigger];
 
     fn choices(kind: ControllerKind) -> &'static [Self] {
         match kind.family() {
             crate::inputs::ControllerFamily::Steam => &Self::STEAM,
             crate::inputs::ControllerFamily::EightBitDo => &Self::EIGHTBITDO,
+            crate::inputs::ControllerFamily::Flydigi => &Self::FLYDIGI,
+            crate::inputs::ControllerFamily::GameSir => &Self::GAMESIR,
             crate::inputs::ControllerFamily::DualSense => &Self::DUAL_SENSE,
         }
     }

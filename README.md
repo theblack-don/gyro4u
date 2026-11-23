@@ -2,7 +2,7 @@
 
 # Gyro4U
 
-Native Linux GUI tool for configuring DualSense controllers, the 2026 Steam Controller, and the 8BitDo Pro 3.
+Native Linux GUI tool for configuring DualSense controllers, the 2026 Steam Controller, the 8BitDo Pro 3, the Flydigi Apex 5 and Vader 5 Pro, and the GameSir Tarantula Pro.
 
 > [!note]
 > **DualSense Edge** is supported and tested, including the Edge paddles and Fn buttons.
@@ -14,6 +14,30 @@ Native Linux GUI tool for configuring DualSense controllers, the 2026 Steam Cont
 > **8BitDo Pro 3** (`2DC8:6009`) is supported wired over USB-C and experimentally
 > over Bluetooth in D mode. The 2.4G receiver (`2DC8:3109`, `2DC8:310B`) is
 > XInput/Switch only and cannot provide DInput, gyro, or the extra buttons.
+>
+> **Flydigi Apex 5** (`37D7:2501`) is supported wired over USB-C in PC mode.
+> Its XInput interface is ignored; Gyro4U opens the vendor HID interface
+> (`FFA0`, interface 2) for buttons, sticks, triggers, gyro, accelerometer, and
+> basic rumble.
+>
+> **Flydigi Vader 5 Pro** (`37D7:2401`) is supported wired over USB-C in PC
+> mode. Gyro4U opens interface 1, the vendor HID interface (`FFA0`) with
+> unnumbered 32-byte input and output reports, for buttons, sticks, triggers,
+> gyro, accelerometer, and basic rumble.
+>
+> For both Flydigi models, adaptive triggers, RGB, firmware updates, and
+> device-side profile writing are not supported. Enable the third-party
+> controller mapping setting in Flydigi Space Station if the input stream does
+> not start.
+>
+> **GameSir Tarantula Pro** (`3537:103E`) is supported through its 2.4 GHz
+> dongle in XInput/PC mode. The XInput interface is bound by `xpad`; Gyro4U
+> opens vendor HID interface 1 (usage page `FFA0` when present) for buttons,
+> sticks, triggers, gyro, accelerometer, the L4/R4/T1-T3/C1-C4/Share extras,
+> battery, and basic rumble at roughly 73 Hz. The M button is an on-controller
+> function and is not a host input. RGB, firmware updates, adaptive triggers,
+> and device-side profile writing are not supported. The wired `3537:1050`
+> mode is not supported yet; use the 2.4 GHz dongle.
 
 > [!warning]
 > gyro4u talks to the controller directly over HID. Close Steam Input (or disable
@@ -35,13 +59,23 @@ Gyro4U is based on [DS4U](https://git.yokai.digital/deadYokai/ds4u) by deadYokai
 - Safe read-only Steam receiver probing (daemon) detects a controller waking in
   an idle puck/receiver slot within ~1 s, without changing controller state
 - Controller switcher in the top bar (`Automatic`, `DualSense`, `Steam
-  Controller`, or `8BitDo`); `Automatic` prefers DualSense, then Steam, then
-  8BitDo when several are present, and family switches retry until the requested
-  controller is available
+  Controller`, `8BitDo`, `Flydigi`, or `GameSir`); `Automatic` prefers DualSense,
+  then Steam, then 8BitDo, then Flydigi, then GameSir when several are present,
+  and family switches retry until the requested controller is available
 - DualSense Edge paddles and Fn buttons
 - 8BitDo Pro 3: A/B/X/Y, D-pad, sticks, L1/R1/L2/R2, L3/R3, Create/Options/Home,
   and the L4/R4/PL/PR extra buttons; basic left/right rumble; battery/charging;
   wired or Bluetooth DInput
+- Flydigi Apex 5: A/B/X/Y, D-pad, both sticks, L1/R1/L2/R2 analog, L3/R3,
+  View/Menu/Guide, LM/RM, and M1-M4; gyro and accelerometer through the
+  gyro-to-mouse pipeline; basic left/right rumble; battery/charging
+- Flydigi Vader 5 Pro: A/B/X/Y, D-pad, both sticks, L1/R1/L2/R2 analog, L3/R3,
+  View/Menu/Guide, C/Z/Circle, LM/RM, and M1-M4; gyro and accelerometer through
+  the gyro-to-mouse pipeline; basic left/right rumble; battery/charging
+- GameSir Tarantula Pro: A/B/X/Y, D-pad, both sticks, L1/R1/L2/R2 analog, L3/R3,
+  View/Menu/Home/Share, L4/R4, T1-T3, and C1-C4 through the 2.4 GHz dongle;
+  gyro and accelerometer through the gyro-to-mouse pipeline; basic left/right
+  rumble; battery/charging
 - Steam Controller (2026): both trackpads (touch, click, position, pressure),
   capacitive stick touch and grip sense, L4/L5/R4/R5 back buttons, L/R trigger
   clicks, Steam and QAM buttons, battery/charging, and wired/BLE/puck transports
@@ -69,6 +103,25 @@ experimental. The Pro 3 has no lightbar, audio, firmware flashing, adaptive
 triggers, or touchpad, and these pages are hidden. Rumble is basic left/right
 output only; trigger rumble and raw haptics are unavailable. Star and Profile
 are on-controller functions and are not host-visible inputs.
+
+Flydigi Apex 5 limits in this release: wired USB-C in PC mode only. Adaptive
+triggers, RGB, firmware flashing, device-side profile writing, C/Z, touchpad,
+and microphone are not supported, and these pages are hidden. Rumble is basic
+left/right output only; trigger rumble and raw haptics are unavailable.
+
+Flydigi Vader 5 Pro limits in this release: wired USB-C in PC mode only. Adaptive
+triggers, RGB, firmware flashing, device-side profile writing, touchpad, and
+microphone are not supported, and these pages are hidden. Rumble is basic
+left/right output only; trigger rumble and raw haptics are unavailable.
+
+GameSir Tarantula Pro limits in this release: 2.4 GHz dongle in XInput/PC mode
+only; the wired `3537:1050` mode is not supported yet. Share is exposed as a
+distinct host input, but the M button is an on-controller function and is not
+visible to the host. RGB, firmware flashing, device-side profile writing,
+adaptive triggers, touchpad, and microphone are not supported, and these pages
+are hidden. Rumble is basic left/right output only; trigger rumble and raw
+haptics are unavailable. The sensor axis signs are the initial values and may
+need correction after extended hardware testing.
 
 ### Remapping
 - Remap buttons to gamepad buttons, keyboard keys, mouse buttons, or scroll wheel directions
@@ -260,6 +313,9 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1303", TAG+="ua
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1305", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="6009", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="37d7", ATTRS{idProduct}=="2501", MODE="0664", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="37d7", ATTRS{idProduct}=="2401", MODE="0664", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3537", ATTRS{idProduct}=="103e", MODE="0664", GROUP="input", TAG+="uaccess"
 KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
 ```
 
@@ -288,7 +344,7 @@ socket:
 |---------|-------------|
 | `gyro4u` | Launch the GUI |
 | `gyro4u --daemon` | Run as the background daemon |
-| `gyro4u --list-devices` | List detected DualSense, Steam Controller, and 8BitDo Pro 3 devices, their transport and path, and candidates that were skipped |
+| `gyro4u --list-devices` | List detected DualSense, Steam Controller, 8BitDo Pro 3, Flydigi Apex 5 / Vader 5 Pro, and GameSir Tarantula Pro devices, their transport and path, and candidates that were skipped |
 | `gyro4u --status` | Show the connected controller (serial, product id, USB/BT) and battery |
 | `gyro4u --list-profiles` | List saved profile names |
 | `gyro4u --switch-profile <name>` | Switch the active profile |
@@ -360,17 +416,17 @@ with an incompatible protocol and print the reason.
 
 The controller switcher sits in the top bar next to the connection and battery
 indicators. It shows one row per controller family: DualSense, Steam Controller,
-and 8BitDo. All Steam puck/receiver slots collapse into a single Steam row. The
-daemon probes idle receiver slots read-only about once per second, so waking a
-Steam Controller makes that row live within about a second. A puck with no live
-controller is labeled **Steam receiver** instead of looking like a connected
-controller. Empty probes, busy handles, and permission errors are treated as
-unknown, so they never mark a receiver dead.
+8BitDo, Flydigi, and GameSir. All Steam puck/receiver slots collapse into a
+single Steam row. The daemon probes idle receiver slots read-only about once per
+second, so waking a Steam Controller makes that row live within about a second.
+A puck with no live controller is labeled **Steam receiver** instead of looking
+like a connected controller. Empty probes, busy handles, and permission errors
+are treated as unknown, so they never mark a receiver dead.
 
-- Choosing **Automatic** uses DualSense first, then Steam, then 8BitDo when
-  several families are available. It stays DualSense-first: another controller
-  waking while a DualSense is active updates its row but does not switch
-  automatically.
+- Choosing **Automatic** uses DualSense first, then Steam, then 8BitDo, then
+  Flydigi, then GameSir when several families are available. It stays
+  DualSense-first: another controller waking while a DualSense is active updates
+  its row but does not switch automatically.
 - Clicking another family row selects it explicitly and retries. While a Steam
   Controller is off, the switcher shows `Steam Controller not detected — turn it
   on; retrying`, and the current controller stays active until the Steam
@@ -383,8 +439,10 @@ unknown, so they never mark a receiver dead.
   the switcher.
 - The preference is persisted in `settings.json` and shared with the daemon, so
   changing it reconnects through the daemon without restarting it.
-- Each controller family remembers its own last active profile across switches;
-  switching back restores that family's profile.
+- Each profile group remembers its own last active profile across switches;
+  switching back restores that group's profile. DualSense and DualSense Edge
+  share a group; Apex 5, Vader 5 Pro, and the GameSir Tarantula Pro each have
+  their own.
 
 Idle receiver liveness needs the daemon. In direct mode (app detached from the
 daemon) a live direct Steam Controller is still detected and selected correctly,
@@ -410,6 +468,9 @@ services.udev.extraRules = ''
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", TAG+="uaccess"
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1305", TAG+="uaccess"
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="6009", TAG+="uaccess"
+  SUBSYSTEM=="hidraw", ATTRS{idVendor}=="37d7", ATTRS{idProduct}=="2501", MODE="0664", GROUP="input", TAG+="uaccess"
+  SUBSYSTEM=="hidraw", ATTRS{idVendor}=="37d7", ATTRS{idProduct}=="2401", MODE="0664", GROUP="input", TAG+="uaccess"
+  SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3537", ATTRS{idProduct}=="103e", MODE="0664", GROUP="input", TAG+="uaccess"
   KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
 '';
 ```
@@ -426,28 +487,41 @@ ExecStart=%h/.nix-profile/bin/gyro4u --daemon
 
 Profiles are stored as JSON in `~/.config/gyro4u/profiles/<name>.json`, and the
 filename is derived from the profile name, so profile names are global across
-all controller families.
-The active profile for each family is recorded separately in `settings.json`. A
-`Default` profile is created automatically for DualSense, a `SteamDefault`
-profile for the Steam Controller, and an `8BitDoDefault` profile for the
-8BitDo Pro 3. Profiles carry their device family, so Steam-only and 8BitDo-only
-bindings do not leak into DualSense profiles (and vice versa).
+controllers.
+The active profile for each profile group is recorded separately in
+`settings.json`. A `Default` profile is created automatically for DualSense and
+DualSense Edge, a `SteamDefault` profile for the Steam Controller, an
+`8BitDoDefault` profile for the 8BitDo Pro 3, an `Apex5Default` profile for the
+Flydigi Apex 5, a `Vader5Default` profile for the Flydigi Vader 5 Pro, and a
+`TarantulaProDefault` profile for the GameSir Tarantula Pro.
+Profiles carry their device group, so Steam-only, 8BitDo-only, DualSense-only,
+Flydigi-only, and GameSir-only bindings do not leak into other groups' profiles.
 
-The **Profiles** section shows every profile with a DualSense, Steam, or 8BitDo
-family badge. Profiles for another family can be converted to the active
-controller; conversion preserves every mapping and setting and only changes the
-profile's device family. Family-specific buttons and features may become inert
-after conversion, and the UI warns about this. Creating a profile whose name
-already exists for another family reports the collision and offers the same
-conversion instead of silently overwriting anything.
+Upgrading from a build where Apex 5 and Vader 5 Pro shared `Apex5Default`
+normalizes that file to an Apex 5 profile and copies it once to
+`Vader5Default`; an existing `Vader5Default` is never overwritten.
+
+The **Profiles** section shows every profile with its controller badge. The
+`Show` filter is session-only and defaults to the connected controller's profile
+group; it can also show all controllers or one specific group. The Active
+section is unaffected by the filter. Profiles for another group can be
+converted to the active controller; conversion preserves every mapping and
+setting and only changes the profile's device. Gyro center calibration is reset
+when the profile group changes and must be recalibrated on the new controller.
+Controller-specific buttons and features may become inert after conversion, and
+the UI warns about this. Creating a profile whose name already exists for
+another controller reports the collision and offers the same conversion instead
+of silently overwriting anything.
 
 Profiles can also be renamed inline from the **Profiles** section. Renaming
 preserves every mapping and setting, and renaming the active profile keeps it
-active. The profile's canonical default (`Default` for DualSense,
-`SteamDefault` for the Steam Controller, `8BitDoDefault` for the 8BitDo Pro 3)
-cannot be renamed or deleted. Deletion is device-aware: it protects the default
-of the profile's own device, so a converted profile that happens to be named
-`Default` while owned by another family can be deleted.
+active. The profile's canonical default (`Default` for DualSense and Edge,
+`SteamDefault` for the Steam Controller, `8BitDoDefault` for the 8BitDo Pro 3,
+`Apex5Default` for the Apex 5, `Vader5Default` for the Vader 5 Pro, and
+`TarantulaProDefault` for the GameSir Tarantula Pro) cannot
+be renamed or deleted. Deletion is device-aware: it protects the default of the
+profile's own device, so a converted profile that happens to be named `Default`
+while owned by another group can be deleted.
 
 Manage profiles from the GUI (the **Profiles** section) or from the [command line](#command-line-usage).
 
@@ -499,7 +573,7 @@ All color values are `[R, G, B]` in the 0–255 range.
 
 | Path | Contents |
 |------|----------|
-| `~/.config/gyro4u/settings.json` | Active theme ID, per-family active profile names, daemon auto-start, controller preference |
+| `~/.config/gyro4u/settings.json` | Active theme ID, per-profile-group active profile names, daemon auto-start, controller preference |
 | `~/.config/gyro4u/profiles/` | Saved profiles (`<name>.json`) |
 | `~/.config/gyro4u/themes/` | Custom theme files (`<id>.json`) |
 | `$XDG_RUNTIME_DIR/gyro4u.socket` | Daemon Unix socket |

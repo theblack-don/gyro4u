@@ -11,9 +11,11 @@ use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    apex5::{self, Apex5},
     common::{BatteryInfo, DS_PID, DS_VID, DSE_PID, MicLedState},
     dualsense::{DualSense, HAPTICS_PACKET_SAMPLES},
     eightbitdo::{self, EightBitDoPro3},
+    gamesir::{self, GameSirTarantulaPro},
     inputs::{ControllerCapabilities, ControllerKind, ControllerState},
     settings::ControllerPreference,
     steam_controller::{self, SteamController, SteamPadHaptic, SteamPadSide},
@@ -40,6 +42,8 @@ pub enum ControllerInner {
     DualSense(DualSense),
     Steam(SteamController),
     EightBitDo(EightBitDoPro3),
+    Flydigi(Apex5),
+    GameSir(GameSirTarantulaPro),
 }
 
 pub struct PhysicalController {
@@ -50,12 +54,14 @@ pub struct PhysicalController {
 pub use crate::inputs::ControllerFamily;
 
 /// Presence snapshot for all supported families. Auto selection prefers
-/// DualSense, then Steam, then 8BitDo.
+/// DualSense, then Steam, then 8BitDo, then Flydigi, then GameSir.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FamilyPresence {
     pub dualsense: bool,
     pub steam: bool,
     pub eightbitdo: bool,
+    pub flydigi: bool,
+    pub gamesir: bool,
 }
 
 impl FamilyPresence {
@@ -64,6 +70,8 @@ impl FamilyPresence {
             ControllerFamily::DualSense => self.dualsense,
             ControllerFamily::Steam => self.steam,
             ControllerFamily::EightBitDo => self.eightbitdo,
+            ControllerFamily::Flydigi => self.flydigi,
+            ControllerFamily::GameSir => self.gamesir,
         }
     }
 
@@ -72,6 +80,8 @@ impl FamilyPresence {
             ControllerFamily::DualSense,
             ControllerFamily::Steam,
             ControllerFamily::EightBitDo,
+            ControllerFamily::Flydigi,
+            ControllerFamily::GameSir,
         ]
         .into_iter()
         .filter(|family| self.present(*family))
@@ -90,6 +100,8 @@ pub fn requested_family(preference: ControllerPreference) -> Option<ControllerFa
         ControllerPreference::DualSense => Some(ControllerFamily::DualSense),
         ControllerPreference::Steam => Some(ControllerFamily::Steam),
         ControllerPreference::EightBitDo => Some(ControllerFamily::EightBitDo),
+        ControllerPreference::Flydigi => Some(ControllerFamily::Flydigi),
+        ControllerPreference::GameSir => Some(ControllerFamily::GameSir),
     }
 }
 
@@ -99,6 +111,8 @@ pub enum DeviceClass {
     SkippedSteamInterface,
     SkippedEightBitDoReceiver,
     SkippedEightBitDoModel,
+    SkippedFlydigiModel,
+    SkippedGameSirModel,
     Unrelated,
 }
 
@@ -124,6 +138,32 @@ pub fn classify_device(vendor_id: u16, product_id: u16, interface_number: i32) -
             DeviceClass::SkippedEightBitDoModel
         };
     }
+    if apex5::is_flydigi_vid(vendor_id) {
+        if apex5::is_supported_pid(product_id) {
+            return if apex5::is_controller_interface(product_id, interface_number) {
+                DeviceClass::Controller(ControllerFamily::Flydigi)
+            } else {
+                DeviceClass::Unrelated
+            };
+        }
+        if apex5::is_vendor_interface(interface_number) {
+            return DeviceClass::SkippedFlydigiModel;
+        }
+        return DeviceClass::Unrelated;
+    }
+    if gamesir::is_gamesir_vid(vendor_id) {
+        if gamesir::is_supported_pid(product_id) {
+            return if gamesir::is_controller_interface(product_id, interface_number) {
+                DeviceClass::Controller(ControllerFamily::GameSir)
+            } else {
+                DeviceClass::Unrelated
+            };
+        }
+        if interface_number == gamesir::GAMESIR_INTERFACE {
+            return DeviceClass::SkippedGameSirModel;
+        }
+        return DeviceClass::Unrelated;
+    }
     DeviceClass::Unrelated
 }
 
@@ -142,6 +182,8 @@ pub fn select_family(
         ControllerPreference::EightBitDo => {
             presence.eightbitdo.then_some(ControllerFamily::EightBitDo)
         }
+        ControllerPreference::Flydigi => presence.flydigi.then_some(ControllerFamily::Flydigi),
+        ControllerPreference::GameSir => presence.gamesir.then_some(ControllerFamily::GameSir),
     }
 }
 
@@ -166,6 +208,51 @@ pub struct DetectedDevice {
     pub identity: String,
     pub path: String,
     pub transport: String,
+}
+
+impl DetectedDevice {
+    /// Model name for UI text; family labels stay coarse for settings.
+    pub fn label(&self) -> String {
+        device_label_for(self.vendor_id, self.product_id)
+    }
+}
+
+/// Human-readable model label for a detected controller.
+pub fn device_label_for(vendor_id: u16, product_id: u16) -> String {
+    if vendor_id == DS_VID {
+        return match product_id {
+            DSE_PID => "DualSense Edge",
+            _ => "DualSense",
+        }
+        .to_string();
+    }
+    if steam_controller::is_steam_vid(vendor_id) {
+        return ControllerFamily::Steam.label().to_string();
+    }
+    if eightbitdo::is_eightbitdo_vid(vendor_id) {
+        return if eightbitdo::is_supported_pid(product_id) {
+            "8BitDo Pro 3"
+        } else {
+            ControllerFamily::EightBitDo.label()
+        }
+        .to_string();
+    }
+    if apex5::is_flydigi_vid(vendor_id) {
+        return match product_id {
+            apex5::APEX5_PID => "Flydigi Apex 5",
+            apex5::VADER5_PID => "Flydigi Vader 5 Pro",
+            _ => ControllerFamily::Flydigi.label(),
+        }
+        .to_string();
+    }
+    if gamesir::is_gamesir_vid(vendor_id) {
+        return match product_id {
+            gamesir::TARANTULA_PRO_PID => "GameSir Tarantula Pro",
+            _ => ControllerFamily::GameSir.label(),
+        }
+        .to_string();
+    }
+    "Controller".to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,6 +333,8 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
                             "USB".to_string()
                         }
                     }
+                    ControllerFamily::Flydigi => "USB".to_string(),
+                    ControllerFamily::GameSir => "2.4 GHz".to_string(),
                 };
                 devices.push(DetectedDevice {
                     family,
@@ -296,6 +385,30 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
                         .to_string(),
                 });
             }
+            DeviceClass::SkippedFlydigiModel => {
+                skipped.push(SkippedDevice {
+                    vendor_id: entry.vendor_id,
+                    product_id: entry.product_id,
+                    interface_number: entry.interface_number,
+                    serial: entry.serial,
+                    path: entry.path,
+                    reason: "unsupported Flydigi model; only the wired Apex 5 and Vader 5 Pro are \
+                             supported"
+                        .to_string(),
+                });
+            }
+            DeviceClass::SkippedGameSirModel => {
+                skipped.push(SkippedDevice {
+                    vendor_id: entry.vendor_id,
+                    product_id: entry.product_id,
+                    interface_number: entry.interface_number,
+                    serial: entry.serial,
+                    path: entry.path,
+                    reason: gamesir::skip_reason(entry.product_id)
+                        .unwrap_or("unsupported GameSir model")
+                        .to_string(),
+                });
+            }
             DeviceClass::Unrelated => {}
         }
     }
@@ -336,7 +449,10 @@ pub fn present_families(api: &HidApi, selector: Option<&str>) -> FamilyPresence 
         None => true,
         Some(selector) => match device.family {
             ControllerFamily::DualSense => device.serial.as_deref() == Some(selector),
-            ControllerFamily::Steam | ControllerFamily::EightBitDo => {
+            ControllerFamily::Steam
+            | ControllerFamily::EightBitDo
+            | ControllerFamily::Flydigi
+            | ControllerFamily::GameSir => {
                 device.serial.as_deref() == Some(selector) || device.path == selector
             }
         },
@@ -352,15 +468,23 @@ pub fn present_families(api: &HidApi, selector: Option<&str>) -> FamilyPresence 
         eightbitdo: devices
             .iter()
             .any(|d| d.family == ControllerFamily::EightBitDo && matches(d)),
+        flydigi: devices
+            .iter()
+            .any(|d| d.family == ControllerFamily::Flydigi && matches(d)),
+        gamesir: devices
+            .iter()
+            .any(|d| d.family == ControllerFamily::GameSir && matches(d)),
     }
 }
 
-/// A family-level view for the top-bar switcher. Steam puck/receiver slots
-/// collapse into one row; a controller is live when wired/BLE is present, the
-/// family is active, or a safe probe observed a live receiver slot.
+/// One row per detected family for the top-bar switcher. `label` names the
+/// chosen model; Steam puck/receiver slots collapse into one row. A controller
+/// is live when wired/BLE is present, the family is active, or a safe probe
+/// observed a live receiver slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FamilyRow {
     pub family: ControllerFamily,
+    pub label: String,
     pub active: bool,
     pub live: bool,
     pub receiver_only: bool,
@@ -557,6 +681,7 @@ pub fn inventory_rows(
     {
         rows.push(FamilyRow {
             family: ControllerFamily::DualSense,
+            label: chosen.label(),
             active: active_family == Some(ControllerFamily::DualSense),
             live: true,
             receiver_only: false,
@@ -609,6 +734,7 @@ pub fn inventory_rows(
         };
         rows.push(FamilyRow {
             family: ControllerFamily::Steam,
+            label: ControllerFamily::Steam.label().to_string(),
             active,
             live,
             receiver_only: !live,
@@ -618,6 +744,7 @@ pub fn inventory_rows(
     } else if let Some(slot) = live_slot {
         rows.push(FamilyRow {
             family: ControllerFamily::Steam,
+            label: ControllerFamily::Steam.label().to_string(),
             active: active_family == Some(ControllerFamily::Steam),
             live: true,
             receiver_only: false,
@@ -637,7 +764,48 @@ pub fn inventory_rows(
     {
         rows.push(FamilyRow {
             family: ControllerFamily::EightBitDo,
+            label: chosen.label(),
             active: active_family == Some(ControllerFamily::EightBitDo),
+            live: true,
+            receiver_only: false,
+            transport: Some(chosen.transport.clone()),
+            identity: Some(chosen.identity.clone()),
+        });
+    }
+
+    let flydigi: Vec<&DetectedDevice> = devices
+        .iter()
+        .filter(|device| device.family == ControllerFamily::Flydigi)
+        .collect();
+    if let Some(chosen) = flydigi
+        .iter()
+        .find(|device| identity_matches(device, active_identity))
+        .or_else(|| flydigi.first())
+    {
+        rows.push(FamilyRow {
+            family: ControllerFamily::Flydigi,
+            label: chosen.label(),
+            active: active_family == Some(ControllerFamily::Flydigi),
+            live: true,
+            receiver_only: false,
+            transport: Some(chosen.transport.clone()),
+            identity: Some(chosen.identity.clone()),
+        });
+    }
+
+    let gamesir: Vec<&DetectedDevice> = devices
+        .iter()
+        .filter(|device| device.family == ControllerFamily::GameSir)
+        .collect();
+    if let Some(chosen) = gamesir
+        .iter()
+        .find(|device| identity_matches(device, active_identity))
+        .or_else(|| gamesir.first())
+    {
+        rows.push(FamilyRow {
+            family: ControllerFamily::GameSir,
+            label: chosen.label(),
+            active: active_family == Some(ControllerFamily::GameSir),
             live: true,
             receiver_only: false,
             transport: Some(chosen.transport.clone()),
@@ -652,12 +820,16 @@ fn no_controller_error(selector: Option<&str>) -> anyhow::Error {
     match selector {
         Some(selector) => anyhow!(
             "No supported controller '{}' found. Connect a DualSense, DualSense Edge, Steam \
-             Controller (2026), or 8BitDo Pro 3 in D mode.",
+             Controller (2026), 8BitDo Pro 3 in D mode, a Flydigi Apex 5 / Vader 5 Pro in \
+             wired PC mode, or a GameSir Tarantula Pro through its 2.4 GHz dongle in XInput/PC \
+             mode.",
             selector
         ),
         None => anyhow!(
             "No supported controller found. Connect a DualSense, DualSense Edge, Steam \
-             Controller (2026), or 8BitDo Pro 3 in D mode."
+             Controller (2026), 8BitDo Pro 3 in D mode, a Flydigi Apex 5 / Vader 5 Pro in \
+             wired PC mode, or a GameSir Tarantula Pro through its 2.4 GHz dongle in XInput/PC \
+             mode."
         ),
     }
 }
@@ -711,6 +883,10 @@ impl PhysicalController {
                 }
                 ControllerFamily::EightBitDo => {
                     EightBitDoPro3::new(api, selector).map(Self::from_eightbitdo)
+                }
+                ControllerFamily::Flydigi => Apex5::new(api, selector).map(Self::from_flydigi),
+                ControllerFamily::GameSir => {
+                    GameSirTarantulaPro::new(api, selector).map(Self::from_gamesir)
                 }
             };
             match opened {
@@ -783,6 +959,38 @@ impl PhysicalController {
         }
     }
 
+    fn from_flydigi(device: Apex5) -> Self {
+        let info = ControllerInfo {
+            serial: device.serial().to_string(),
+            identity: device.identity().to_string(),
+            vendor_id: device.vendor_id(),
+            product_id: device.product_id(),
+            kind: device.kind(),
+            is_bluetooth: false,
+            transport: "USB".to_string(),
+        };
+        Self {
+            inner: ControllerInner::Flydigi(device),
+            info,
+        }
+    }
+
+    fn from_gamesir(device: GameSirTarantulaPro) -> Self {
+        let info = ControllerInfo {
+            serial: device.serial().to_string(),
+            identity: device.identity().to_string(),
+            vendor_id: device.vendor_id(),
+            product_id: device.product_id(),
+            kind: device.kind(),
+            is_bluetooth: false,
+            transport: "2.4 GHz".to_string(),
+        };
+        Self {
+            inner: ControllerInner::GameSir(device),
+            info,
+        }
+    }
+
     pub fn info(&self) -> &ControllerInfo {
         &self.info
     }
@@ -837,6 +1045,22 @@ impl PhysicalController {
                     disconnected: false,
                 }))
             }
+            ControllerInner::Flydigi(device) => {
+                let polled = device.poll_latest_input()?;
+                Ok(polled.map(|polled| PolledInput {
+                    state: polled.state,
+                    battery: polled.battery,
+                    disconnected: false,
+                }))
+            }
+            ControllerInner::GameSir(device) => {
+                let polled = device.poll_latest_input()?;
+                Ok(polled.map(|polled| PolledInput {
+                    state: polled.state,
+                    battery: polled.battery,
+                    disconnected: false,
+                }))
+            }
         }
     }
 
@@ -845,6 +1069,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.get_input_state(),
             ControllerInner::Steam(device) => device.get_input_state(),
             ControllerInner::EightBitDo(device) => device.get_input_state(),
+            ControllerInner::Flydigi(device) => device.get_input_state(),
+            ControllerInner::GameSir(device) => device.get_input_state(),
         }
     }
 
@@ -853,6 +1079,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.get_battery(),
             ControllerInner::Steam(device) => device.get_battery(),
             ControllerInner::EightBitDo(device) => device.get_battery(),
+            ControllerInner::Flydigi(device) => device.get_battery(),
+            ControllerInner::GameSir(device) => device.get_battery(),
         }
     }
 
@@ -861,6 +1089,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.get_firmware_info(),
             ControllerInner::Steam(device) => device.get_firmware_info(),
             ControllerInner::EightBitDo(device) => device.get_firmware_info(),
+            ControllerInner::Flydigi(device) => device.get_firmware_info(),
+            ControllerInner::GameSir(device) => device.get_firmware_info(),
         }
     }
 
@@ -879,6 +1109,18 @@ impl PhysicalController {
             ControllerInner::EightBitDo(_) => {
                 bail!("Firmware updates are not supported for the 8BitDo Pro 3 in gyro4u")
             }
+            ControllerInner::Flydigi(_) => {
+                bail!(
+                    "Firmware updates are not supported for the {} in gyro4u",
+                    self.info.kind.label()
+                )
+            }
+            ControllerInner::GameSir(_) => {
+                bail!(
+                    "Firmware updates are not supported for the {} in gyro4u",
+                    self.info.kind.label()
+                )
+            }
         }
     }
 
@@ -887,6 +1129,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_update_mode(active),
             ControllerInner::Steam(device) => device.set_update_mode(active),
             ControllerInner::EightBitDo(device) => device.set_update_mode(active),
+            ControllerInner::Flydigi(device) => device.set_update_mode(active),
+            ControllerInner::GameSir(device) => device.set_update_mode(active),
         }
     }
 
@@ -895,6 +1139,8 @@ impl PhysicalController {
             ControllerInner::DualSense(_) => Ok(()),
             ControllerInner::Steam(device) => device.set_motion(enabled),
             ControllerInner::EightBitDo(device) => device.set_motion(enabled),
+            ControllerInner::Flydigi(device) => device.set_motion(enabled),
+            ControllerInner::GameSir(device) => device.set_motion(enabled),
         }
     }
 
@@ -903,18 +1149,26 @@ impl PhysicalController {
             ControllerInner::DualSense(_) => Ok(()),
             ControllerInner::Steam(device) => device.force_motion(enabled),
             ControllerInner::EightBitDo(device) => device.force_motion(enabled),
+            ControllerInner::Flydigi(device) => device.force_motion(enabled),
+            ControllerInner::GameSir(device) => device.force_motion(enabled),
         }
     }
 
     pub fn set_restore_on_drop(&mut self, enabled: bool) {
-        if let ControllerInner::Steam(device) = &mut self.inner {
-            device.set_restore_on_drop(enabled);
+        match &mut self.inner {
+            ControllerInner::Steam(device) => device.set_restore_on_drop(enabled),
+            ControllerInner::Flydigi(device) => device.set_restore_on_drop(enabled),
+            ControllerInner::GameSir(device) => device.set_restore_on_drop(enabled),
+            ControllerInner::DualSense(_) | ControllerInner::EightBitDo(_) => {}
         }
     }
 
     pub fn prepare_handoff(&mut self) {
-        if let ControllerInner::Steam(device) = &mut self.inner {
-            device.prepare_handoff();
+        match &mut self.inner {
+            ControllerInner::Steam(device) => device.prepare_handoff(),
+            ControllerInner::Flydigi(device) => device.prepare_handoff(),
+            ControllerInner::GameSir(device) => device.prepare_handoff(),
+            ControllerInner::DualSense(_) | ControllerInner::EightBitDo(_) => {}
         }
     }
 
@@ -923,6 +1177,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_lightbar(r, g, b, brightness),
             ControllerInner::Steam(device) => device.set_lightbar(r, g, b, brightness),
             ControllerInner::EightBitDo(device) => device.set_lightbar(r, g, b, brightness),
+            ControllerInner::Flydigi(device) => device.set_lightbar(r, g, b, brightness),
+            ControllerInner::GameSir(device) => device.set_lightbar(r, g, b, brightness),
         }
     }
 
@@ -931,6 +1187,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_lightbar_enabled(enabled),
             ControllerInner::Steam(device) => device.set_lightbar_enabled(enabled),
             ControllerInner::EightBitDo(device) => device.set_lightbar_enabled(enabled),
+            ControllerInner::Flydigi(device) => device.set_lightbar_enabled(enabled),
+            ControllerInner::GameSir(device) => device.set_lightbar_enabled(enabled),
         }
     }
 
@@ -939,6 +1197,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_player_leds(leds),
             ControllerInner::Steam(device) => device.set_player_leds(leds),
             ControllerInner::EightBitDo(device) => device.set_player_leds(leds),
+            ControllerInner::Flydigi(device) => device.set_player_leds(leds),
+            ControllerInner::GameSir(device) => device.set_player_leds(leds),
         }
     }
 
@@ -947,6 +1207,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_mic(enabled),
             ControllerInner::Steam(device) => device.set_mic(enabled),
             ControllerInner::EightBitDo(device) => device.set_mic(enabled),
+            ControllerInner::Flydigi(device) => device.set_mic(enabled),
+            ControllerInner::GameSir(device) => device.set_mic(enabled),
         }
     }
 
@@ -955,6 +1217,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_mic_led(state),
             ControllerInner::Steam(device) => device.set_mic_led(state),
             ControllerInner::EightBitDo(device) => device.set_mic_led(state),
+            ControllerInner::Flydigi(device) => device.set_mic_led(state),
+            ControllerInner::GameSir(device) => device.set_mic_led(state),
         }
     }
 
@@ -967,6 +1231,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_trigger_effects(left, right),
             ControllerInner::Steam(device) => device.set_trigger_effects(left, right),
             ControllerInner::EightBitDo(device) => device.set_trigger_effects(left, right),
+            ControllerInner::Flydigi(device) => device.set_trigger_effects(left, right),
+            ControllerInner::GameSir(device) => device.set_trigger_effects(left, right),
         }
     }
 
@@ -985,6 +1251,12 @@ impl PhysicalController {
             ControllerInner::EightBitDo(device) => {
                 device.set_trigger_effect(left, right, mode, params)
             }
+            ControllerInner::Flydigi(device) => {
+                device.set_trigger_effect(left, right, mode, params)
+            }
+            ControllerInner::GameSir(device) => {
+                device.set_trigger_effect(left, right, mode, params)
+            }
         }
     }
 
@@ -993,6 +1265,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_trigger_off(),
             ControllerInner::Steam(device) => device.set_trigger_off(),
             ControllerInner::EightBitDo(device) => device.set_trigger_off(),
+            ControllerInner::Flydigi(device) => device.set_trigger_off(),
+            ControllerInner::GameSir(device) => device.set_trigger_off(),
         }
     }
 
@@ -1001,6 +1275,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_vibration(rumble, trigger),
             ControllerInner::Steam(device) => device.set_vibration(rumble, trigger),
             ControllerInner::EightBitDo(device) => device.set_vibration(rumble, trigger),
+            ControllerInner::Flydigi(device) => device.set_vibration(rumble, trigger),
+            ControllerInner::GameSir(device) => device.set_vibration(rumble, trigger),
         }
     }
 
@@ -1009,6 +1285,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_rumble(left, right),
             ControllerInner::Steam(device) => device.set_rumble(left, right),
             ControllerInner::EightBitDo(device) => device.set_rumble(left, right),
+            ControllerInner::Flydigi(device) => device.set_rumble(left, right),
+            ControllerInner::GameSir(device) => device.set_rumble(left, right),
         }
     }
 
@@ -1017,6 +1295,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_haptics(samples),
             ControllerInner::Steam(device) => device.set_haptics(samples),
             ControllerInner::EightBitDo(device) => device.set_haptics(samples),
+            ControllerInner::Flydigi(device) => device.set_haptics(samples),
+            ControllerInner::GameSir(device) => device.set_haptics(samples),
         }
     }
 
@@ -1034,6 +1314,18 @@ impl PhysicalController {
             ControllerInner::EightBitDo(_) => {
                 bail!("Steam Controller pad haptics are not supported on the 8BitDo Pro 3")
             }
+            ControllerInner::Flydigi(_) => {
+                bail!(
+                    "Steam Controller pad haptics are not supported on the {}",
+                    self.info.kind.label()
+                )
+            }
+            ControllerInner::GameSir(_) => {
+                bail!(
+                    "Steam Controller pad haptics are not supported on the {}",
+                    self.info.kind.label()
+                )
+            }
         }
     }
 
@@ -1042,6 +1334,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_speaker(mode),
             ControllerInner::Steam(device) => device.set_speaker(mode),
             ControllerInner::EightBitDo(device) => device.set_speaker(mode),
+            ControllerInner::Flydigi(device) => device.set_speaker(mode),
+            ControllerInner::GameSir(device) => device.set_speaker(mode),
         }
     }
 
@@ -1050,6 +1344,8 @@ impl PhysicalController {
             ControllerInner::DualSense(device) => device.set_volume(volume),
             ControllerInner::Steam(device) => device.set_volume(volume),
             ControllerInner::EightBitDo(device) => device.set_volume(volume),
+            ControllerInner::Flydigi(device) => device.set_volume(volume),
+            ControllerInner::GameSir(device) => device.set_volume(volume),
         }
     }
 }
@@ -1066,7 +1362,13 @@ pub fn is_present(api: &HidApi, identity: &str) -> bool {
             );
         let is_eightbitdo = eightbitdo::is_eightbitdo_vid(info.vendor_id())
             && eightbitdo::is_supported_pid(info.product_id());
-        if !is_dualsense && !is_steam && !is_eightbitdo {
+        let is_flydigi = apex5::is_flydigi_vid(info.vendor_id())
+            && apex5::is_supported_pid(info.product_id())
+            && apex5::is_controller_interface(info.product_id(), info.interface_number());
+        let is_gamesir = gamesir::is_gamesir_vid(info.vendor_id())
+            && gamesir::is_supported_pid(info.product_id())
+            && gamesir::is_controller_interface(info.product_id(), info.interface_number());
+        if !is_dualsense && !is_steam && !is_eightbitdo && !is_flydigi && !is_gamesir {
             return false;
         }
         info.serial_number()
@@ -1094,7 +1396,7 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
         for device in &devices {
             out.push_str(&format!(
                 "  {:<27} {:04x}:{:04x}  {:<30} {}\n",
-                device.family.label(),
+                device.label(),
                 device.vendor_id,
                 device.product_id,
                 device.transport,
@@ -1128,10 +1430,18 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
     let eightbitdo = devices
         .iter()
         .any(|device| device.family == ControllerFamily::EightBitDo);
+    let flydigi = devices
+        .iter()
+        .any(|device| device.family == ControllerFamily::Flydigi);
+    let gamesir = devices
+        .iter()
+        .any(|device| device.family == ControllerFamily::GameSir);
     let presence = FamilyPresence {
         dualsense,
         steam,
         eightbitdo,
+        flydigi,
+        gamesir,
     };
 
     out.push_str(&format!("Preference: {}\n", preference.label()));
@@ -1150,6 +1460,20 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
              receiver is not supported.\n",
         );
     }
+    if flydigi {
+        out.push_str(
+            "Note: wired Flydigi Apex 5 and Vader 5 Pro in PC mode are supported; gyro and basic \
+             rumble are available, but adaptive triggers, RGB, and firmware updates are not.\n",
+        );
+    }
+    if gamesir {
+        out.push_str(
+            "Note: the GameSir Tarantula Pro is supported through its 2.4 GHz dongle in \
+             XInput/PC mode; gyro, basic rumble, and the L4/R4/T1-T3/C1-C4/Share extras are \
+             available, but RGB, firmware updates, and adaptive triggers are not. Wired \
+             3537:1050 is not supported yet.\n",
+        );
+    }
     out
 }
 
@@ -1162,6 +1486,23 @@ mod tests {
             dualsense,
             steam,
             eightbitdo,
+            flydigi: false,
+            gamesir: false,
+        }
+    }
+
+    fn presence_with_flydigi(
+        dualsense: bool,
+        steam: bool,
+        eightbitdo: bool,
+        flydigi: bool,
+    ) -> FamilyPresence {
+        FamilyPresence {
+            dualsense,
+            steam,
+            eightbitdo,
+            flydigi,
+            gamesir: false,
         }
     }
 
@@ -1186,6 +1527,110 @@ mod tests {
         assert_eq!(
             select_family(ControllerPreference::Auto, presence(false, false, true)),
             Some(ControllerFamily::EightBitDo)
+        );
+    }
+
+    fn presence_with_gamesir(
+        dualsense: bool,
+        steam: bool,
+        eightbitdo: bool,
+        flydigi: bool,
+        gamesir: bool,
+    ) -> FamilyPresence {
+        FamilyPresence {
+            dualsense,
+            steam,
+            eightbitdo,
+            flydigi,
+            gamesir,
+        }
+    }
+
+    #[test]
+    fn auto_selects_gamesir_when_only_gamesir_present() {
+        assert_eq!(
+            select_family(
+                ControllerPreference::Auto,
+                presence_with_gamesir(false, false, false, false, true)
+            ),
+            Some(ControllerFamily::GameSir)
+        );
+    }
+
+    #[test]
+    fn gamesir_preference_wins_when_present() {
+        assert_eq!(
+            select_family(
+                ControllerPreference::GameSir,
+                presence_with_gamesir(true, true, true, true, true)
+            ),
+            Some(ControllerFamily::GameSir)
+        );
+        assert_eq!(
+            select_family(ControllerPreference::GameSir, presence(false, false, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn auto_keeps_gamesir_last() {
+        assert_eq!(
+            select_family(
+                ControllerPreference::Auto,
+                presence_with_gamesir(false, false, false, true, true)
+            ),
+            Some(ControllerFamily::Flydigi)
+        );
+        assert_eq!(
+            requested_family(ControllerPreference::GameSir),
+            Some(ControllerFamily::GameSir)
+        );
+    }
+
+    #[test]
+    fn auto_selects_flydigi_when_only_flydigi_present() {
+        assert_eq!(
+            select_family(
+                ControllerPreference::Auto,
+                presence_with_flydigi(false, false, false, true)
+            ),
+            Some(ControllerFamily::Flydigi)
+        );
+    }
+
+    #[test]
+    fn auto_prefers_eightbitdo_over_flydigi() {
+        assert_eq!(
+            select_family(
+                ControllerPreference::Auto,
+                presence_with_flydigi(false, false, true, true)
+            ),
+            Some(ControllerFamily::EightBitDo)
+        );
+        assert_eq!(
+            select_family(
+                ControllerPreference::Auto,
+                presence_with_flydigi(false, true, true, true)
+            ),
+            Some(ControllerFamily::Steam)
+        );
+        assert_eq!(
+            select_family(
+                ControllerPreference::Auto,
+                presence_with_flydigi(true, true, true, true)
+            ),
+            Some(ControllerFamily::DualSense)
+        );
+    }
+
+    #[test]
+    fn flydigi_preference_wins_when_present() {
+        assert_eq!(
+            select_family(
+                ControllerPreference::Flydigi,
+                presence_with_flydigi(true, true, true, true)
+            ),
+            Some(ControllerFamily::Flydigi)
         );
     }
 
@@ -1245,6 +1690,14 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            select_family(ControllerPreference::Flydigi, presence(true, true, true)),
+            None
+        );
+        assert_eq!(
+            select_family(ControllerPreference::GameSir, presence(true, true, true)),
+            None
+        );
     }
 
     #[test]
@@ -1276,6 +1729,14 @@ mod tests {
                 presence(true, true, true)
             ),
             Some(ControllerFamily::EightBitDo)
+        );
+        assert_eq!(
+            switch_target(
+                ControllerPreference::Flydigi,
+                Some(ControllerFamily::DualSense),
+                presence_with_flydigi(true, false, false, true)
+            ),
+            Some(ControllerFamily::Flydigi)
         );
     }
 
@@ -1342,10 +1803,18 @@ mod tests {
             requested_family(ControllerPreference::EightBitDo),
             Some(ControllerFamily::EightBitDo)
         );
+        assert_eq!(
+            requested_family(ControllerPreference::Flydigi),
+            Some(ControllerFamily::Flydigi)
+        );
+        assert_eq!(
+            requested_family(ControllerPreference::GameSir),
+            Some(ControllerFamily::GameSir)
+        );
     }
 
     #[test]
-    fn family_of_kind_maps_edge_and_pro3() {
+    fn family_of_kind_maps_edge_pro3_and_flydigi_models() {
         assert_eq!(
             family_of_kind(ControllerKind::DualSenseEdge),
             ControllerFamily::DualSense
@@ -1358,6 +1827,18 @@ mod tests {
             family_of_kind(ControllerKind::EightBitDoPro3),
             ControllerFamily::EightBitDo
         );
+        assert_eq!(
+            family_of_kind(ControllerKind::FlydigiApex5),
+            ControllerFamily::Flydigi
+        );
+        assert_eq!(
+            family_of_kind(ControllerKind::FlydigiVader5Pro),
+            ControllerFamily::Flydigi
+        );
+        assert_eq!(
+            family_of_kind(ControllerKind::GameSirTarantulaPro),
+            ControllerFamily::GameSir
+        );
     }
 
     #[test]
@@ -1367,6 +1848,8 @@ mod tests {
             ControllerPreference::DualSense,
             ControllerPreference::Steam,
             ControllerPreference::EightBitDo,
+            ControllerPreference::Flydigi,
+            ControllerPreference::GameSir,
         ] {
             assert_eq!(
                 select_family(preference, presence(false, false, false)),
@@ -1434,6 +1917,115 @@ mod tests {
         );
     }
 
+    #[test]
+    fn flydigi_models_are_supported_on_their_vendor_interfaces() {
+        use crate::apex5::{APEX5_PID, FLYDIGI_VID, VADER5_PID};
+
+        assert_eq!(
+            classify_device(FLYDIGI_VID, APEX5_PID, 2),
+            DeviceClass::Controller(ControllerFamily::Flydigi)
+        );
+        assert_eq!(
+            classify_device(FLYDIGI_VID, VADER5_PID, 1),
+            DeviceClass::Controller(ControllerFamily::Flydigi)
+        );
+        assert_eq!(
+            classify_device(FLYDIGI_VID, 0x2502, 2),
+            DeviceClass::SkippedFlydigiModel
+        );
+        assert_eq!(
+            classify_device(FLYDIGI_VID, 0x2502, 1),
+            DeviceClass::SkippedFlydigiModel
+        );
+        for (pid, interface) in [
+            (APEX5_PID, -1),
+            (APEX5_PID, 0),
+            (APEX5_PID, 1),
+            (APEX5_PID, 3),
+            (VADER5_PID, -1),
+            (VADER5_PID, 0),
+            (VADER5_PID, 2),
+            (VADER5_PID, 3),
+            (0x2502, -1),
+            (0x2502, 0),
+            (0x2502, 3),
+        ] {
+            assert_eq!(
+                classify_device(FLYDIGI_VID, pid, interface),
+                DeviceClass::Unrelated,
+                "pid {pid:#06x} interface {interface}"
+            );
+        }
+    }
+
+    #[test]
+    fn gamesir_tarantula_is_supported_on_interface_one() {
+        use crate::gamesir::{GAMESIR_VID, TARANTULA_PRO_PID};
+
+        assert_eq!(
+            classify_device(GAMESIR_VID, TARANTULA_PRO_PID, 1),
+            DeviceClass::Controller(ControllerFamily::GameSir)
+        );
+        for interface in [-1, 0, 2, 3] {
+            assert_eq!(
+                classify_device(GAMESIR_VID, TARANTULA_PRO_PID, interface),
+                DeviceClass::Unrelated,
+                "interface {interface}"
+            );
+        }
+        assert_eq!(
+            classify_device(GAMESIR_VID, 0x1050, 1),
+            DeviceClass::SkippedGameSirModel
+        );
+        assert_eq!(
+            classify_device(GAMESIR_VID, 0x1050, 0),
+            DeviceClass::Unrelated
+        );
+        assert_eq!(classify_device(0x1234, 0x5678, 1), DeviceClass::Unrelated);
+    }
+
+    #[test]
+    fn device_labels_name_the_detected_model() {
+        use crate::apex5::{APEX5_PID, FLYDIGI_VID, VADER5_PID};
+        use crate::eightbitdo::{EIGHTBITDO_PRO3_PID, EIGHTBITDO_VID};
+        use crate::steam_controller::{STEAM_PID_BLE, STEAM_PID_WIRED, STEAM_VID};
+
+        assert_eq!(
+            device_label_for(EIGHTBITDO_VID, EIGHTBITDO_PRO3_PID),
+            "8BitDo Pro 3"
+        );
+        assert_eq!(device_label_for(EIGHTBITDO_VID, 0x1234), "8BitDo");
+        assert_eq!(device_label_for(FLYDIGI_VID, APEX5_PID), "Flydigi Apex 5");
+        assert_eq!(
+            device_label_for(FLYDIGI_VID, VADER5_PID),
+            "Flydigi Vader 5 Pro"
+        );
+        assert_eq!(device_label_for(FLYDIGI_VID, 0x2502), "Flydigi");
+        assert_eq!(
+            device_label_for(
+                crate::gamesir::GAMESIR_VID,
+                crate::gamesir::TARANTULA_PRO_PID
+            ),
+            "GameSir Tarantula Pro"
+        );
+        assert_eq!(
+            device_label_for(crate::gamesir::GAMESIR_VID, 0x1050),
+            "GameSir"
+        );
+        assert_eq!(device_label_for(DS_VID, DS_PID), "DualSense");
+        assert_eq!(device_label_for(DS_VID, DSE_PID), "DualSense Edge");
+        assert_eq!(
+            device_label_for(STEAM_VID, STEAM_PID_WIRED),
+            "Steam Controller"
+        );
+        assert_eq!(
+            device_label_for(STEAM_VID, STEAM_PID_BLE),
+            "Steam Controller"
+        );
+        assert_eq!(device_label_for(0x1234, 0x5678), "Controller");
+        assert_eq!(ControllerFamily::EightBitDo.label(), "8BitDo");
+    }
+
     fn hid_entry(interface_number: i32, path: &str, serial: Option<&str>) -> HidEntry {
         HidEntry {
             vendor_id: crate::steam_controller::STEAM_VID,
@@ -1483,6 +2075,8 @@ mod tests {
                 ControllerFamily::DualSense => DS_VID,
                 ControllerFamily::Steam => crate::steam_controller::STEAM_VID,
                 ControllerFamily::EightBitDo => crate::eightbitdo::EIGHTBITDO_VID,
+                ControllerFamily::Flydigi => crate::apex5::FLYDIGI_VID,
+                ControllerFamily::GameSir => crate::gamesir::GAMESIR_VID,
             },
             product_id,
             interface_number,
@@ -1493,6 +2087,8 @@ mod tests {
             path: path.to_string(),
             transport: if family == ControllerFamily::Steam {
                 steam_controller::transport_for(product_id, interface_number).label()
+            } else if family == ControllerFamily::GameSir {
+                "2.4 GHz".to_string()
             } else if interface_number == -1 {
                 "Bluetooth".to_string()
             } else {
@@ -1629,6 +2225,7 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].family, ControllerFamily::Steam);
+        assert_eq!(rows[0].label, "Steam Controller");
         assert!(!rows[0].active);
         assert!(!rows[0].live);
         assert!(rows[0].receiver_only);
@@ -1678,6 +2275,39 @@ mod tests {
     }
 
     #[test]
+    fn inventory_labels_use_the_detected_model() {
+        let dualsense = detected(
+            ControllerFamily::DualSense,
+            DS_PID,
+            3,
+            Some("DS-SERIAL"),
+            "/dev/hidraw0",
+        );
+        let rows = inventory_rows(&[dualsense], None, None, None);
+        assert_eq!(rows[0].label, "DualSense");
+
+        let edge = detected(
+            ControllerFamily::DualSense,
+            DSE_PID,
+            3,
+            Some("DSE-SERIAL"),
+            "/dev/hidraw1",
+        );
+        let rows = inventory_rows(&[edge], None, None, None);
+        assert_eq!(rows[0].label, "DualSense Edge");
+
+        let pad = detected(
+            ControllerFamily::EightBitDo,
+            crate::eightbitdo::EIGHTBITDO_PRO3_PID,
+            0,
+            Some("E8BDO-SERIAL"),
+            "/dev/hidraw7",
+        );
+        let rows = inventory_rows(&[pad], None, None, None);
+        assert_eq!(rows[0].label, "8BitDo Pro 3");
+    }
+
+    #[test]
     fn wired_steam_controller_is_live() {
         let wired = detected(
             ControllerFamily::Steam,
@@ -1717,6 +2347,66 @@ mod tests {
         assert!(rows[0].active && rows[0].live);
         assert_eq!(rows[0].transport.as_deref(), Some("USB"));
         assert_eq!(rows[0].identity.as_deref(), Some("E8BDO-SERIAL"));
+    }
+
+    #[test]
+    fn flydigi_models_add_a_live_family_row_with_model_labels() {
+        for (pid, label) in [
+            (crate::apex5::APEX5_PID, "Flydigi Apex 5"),
+            (crate::apex5::VADER5_PID, "Flydigi Vader 5 Pro"),
+        ] {
+            let interface = if pid == crate::apex5::VADER5_PID {
+                1
+            } else {
+                2
+            };
+            let pad = detected(
+                ControllerFamily::Flydigi,
+                pid,
+                interface,
+                Some("FLYDIGI-SERIAL"),
+                "/dev/hidraw9",
+            );
+
+            let rows = inventory_rows(
+                &[pad],
+                Some(ControllerFamily::Flydigi),
+                Some("FLYDIGI-SERIAL"),
+                None,
+            );
+
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].family, ControllerFamily::Flydigi);
+            assert_eq!(rows[0].label, label);
+            assert!(rows[0].active && rows[0].live);
+            assert_eq!(rows[0].transport.as_deref(), Some("USB"));
+            assert_eq!(rows[0].identity.as_deref(), Some("FLYDIGI-SERIAL"));
+        }
+    }
+
+    #[test]
+    fn gamesir_adds_a_live_family_row_with_the_model_label() {
+        let pad = detected(
+            ControllerFamily::GameSir,
+            crate::gamesir::TARANTULA_PRO_PID,
+            1,
+            Some("GAMESIR-SERIAL"),
+            "/dev/hidraw9",
+        );
+
+        let rows = inventory_rows(
+            &[pad],
+            Some(ControllerFamily::GameSir),
+            Some("GAMESIR-SERIAL"),
+            None,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].family, ControllerFamily::GameSir);
+        assert_eq!(rows[0].label, "GameSir Tarantula Pro");
+        assert!(rows[0].active && rows[0].live);
+        assert_eq!(rows[0].transport.as_deref(), Some("2.4 GHz"));
+        assert_eq!(rows[0].identity.as_deref(), Some("GAMESIR-SERIAL"));
     }
 
     #[test]

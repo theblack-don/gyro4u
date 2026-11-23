@@ -250,11 +250,11 @@ fn reassert_motion(state: &Arc<DaemonState>) {
 }
 
 fn profile_matches_device(profile_device: ControllerKind, connected: ControllerKind) -> bool {
-    profile_device.family() == connected.family()
+    profile_device.same_profile_group(connected)
 }
 
-/// Keep the client-provided family when no controller is connected; reject an
-/// explicit mismatch rather than silently rewriting a Steam profile.
+/// Keep the client-provided device when no controller is connected; reject an
+/// explicit profile-group mismatch rather than silently rewriting the profile.
 fn prepare_profile_for_save(
     profile: crate::profiles::Profile,
     active_kind: Option<ControllerKind>,
@@ -290,7 +290,7 @@ fn load_profile_for_kind(
     }
     let remembered = SettingsManager::new()
         .load()
-        .remembered_profile(kind.family())
+        .remembered_profile(kind.profile_group())
         .to_string();
     if remembered != preferred_name && manager.profile_exists(&remembered) {
         return matches(&remembered);
@@ -355,7 +355,7 @@ fn switch_profile(state: &Arc<DaemonState>, name: &str) -> String {
     wlock(&state.inner).active_profile_name = loaded.clone();
     let sm = SettingsManager::new();
     let mut settings = sm.load();
-    settings.remember_profile(kind.family(), &loaded);
+    settings.remember_profile(kind.profile_group(), &loaded);
     sm.save(&settings);
     {
         let (color, leds, mic) = {
@@ -443,7 +443,7 @@ pub fn run_daemon() {
         let sm = SettingsManager::new();
         let settings = sm.load();
         let name = settings
-            .remembered_profile(controller::ControllerFamily::DualSense)
+            .remembered_profile(crate::inputs::ProfileGroup::DualSense)
             .to_string();
         let loaded = apply_profile_to_state(&state, &name);
         wlock(&state.inner).active_profile_name = loaded.clone();
@@ -997,7 +997,7 @@ fn activate_controller(
     *wlock(&state.device_kind) = info.kind;
     let remembered = SettingsManager::new()
         .load()
-        .remembered_profile(info.kind.family())
+        .remembered_profile(info.kind.profile_group())
         .to_string();
     let loaded = apply_profile_to_state(state, &remembered);
     wlock(&state.inner).active_profile_name = loaded;
@@ -1025,18 +1025,19 @@ fn activate_controller(
     let r2 = tr.or(Some((0x05, [0u8; 10])));
     let _ = controller.set_trigger_effects(l, r2);
 
-    // A replaced handle for the same Steam controller must not restore lizard
-    // or IMU state when it is dropped; the new handle owns the device now.
-    let same_steam_device = info.kind.is_steam()
-        && dev
-            .as_ref()
-            .is_some_and(|old| old.kind().is_steam() && old.info().identity == info.identity);
+    // A replaced handle for the same controller must not restore device-global
+    // state when it is dropped; the new handle owns the device now.
+    let same_restorable_device =
+        (info.kind.is_steam() || info.kind.is_flydigi() || info.kind.is_gamesir())
+            && dev.as_ref().is_some_and(|old| {
+                old.kind().family() == info.kind.family() && old.info().identity == info.identity
+            });
     let was_steam = dev.as_ref().is_some_and(|old| old.kind().is_steam());
 
     // Swap the handles while still holding the device lock so IPC clients
     // never observe a gap. The old controller is dropped afterwards.
     let mut old = dev.replace(controller);
-    if same_steam_device && let Some(old) = old.as_mut() {
+    if same_restorable_device && let Some(old) = old.as_mut() {
         old.set_restore_on_drop(false);
     }
     drop(old);
@@ -1581,7 +1582,7 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                 let pm = ProfileManager::new();
                 match pm.load_profile(&old) {
                     Ok(profile) => {
-                        let family = profile.device.family();
+                        let group = profile.device.profile_group();
                         match pm.rename_profile(&old, &new) {
                             Ok(()) => {
                                 {
@@ -1592,8 +1593,8 @@ fn handle_client(stream: DaemonStream, state: Arc<DaemonState>) {
                                 }
                                 let sm = SettingsManager::new();
                                 let mut settings = sm.load();
-                                if settings.remembered_profile(family) == old.as_str() {
-                                    settings.remember_profile(family, &new);
+                                if settings.remembered_profile(group) == old.as_str() {
+                                    settings.remember_profile(group, &new);
                                     sm.save(&settings);
                                 }
                                 println!("{} renamed profile '{}' to '{}'", TAG, old, new);
@@ -2144,6 +2145,66 @@ mod tests {
         )
         .expect("same family save allowed");
         assert_eq!(saved.device, ControllerKind::DualSenseEdge);
+    }
+
+    #[test]
+    fn save_rejects_apex_and_vader_profiles_across_groups() {
+        let error = match prepare_profile_for_save(
+            profile(ControllerKind::FlydigiApex5),
+            Some(ControllerKind::FlydigiVader5Pro),
+        ) {
+            Ok(_) => panic!("Apex profile on Vader must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Flydigi Apex 5"));
+        assert!(error.contains("Flydigi Vader 5 Pro"));
+
+        let error = match prepare_profile_for_save(
+            profile(ControllerKind::FlydigiVader5Pro),
+            Some(ControllerKind::FlydigiApex5),
+        ) {
+            Ok(_) => panic!("Vader profile on Apex must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Flydigi Vader 5 Pro"));
+        assert!(error.contains("Flydigi Apex 5"));
+    }
+
+    #[test]
+    fn save_rejects_gamesir_profile_while_another_family_is_active() {
+        let error = match prepare_profile_for_save(
+            profile(ControllerKind::GameSirTarantulaPro),
+            Some(ControllerKind::DualSense),
+        ) {
+            Ok(_) => panic!("GameSir profile on DualSense must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("GameSir Tarantula Pro"));
+        assert!(error.contains("DualSense"));
+
+        let saved = prepare_profile_for_save(
+            profile(ControllerKind::GameSirTarantulaPro),
+            Some(ControllerKind::GameSirTarantulaPro),
+        )
+        .expect("matching GameSir save allowed");
+        assert_eq!(saved.device, ControllerKind::GameSirTarantulaPro);
+    }
+
+    #[test]
+    fn save_accepts_same_group_profiles_for_flydigi_and_sony() {
+        for (profile_kind, connected) in [
+            (ControllerKind::FlydigiApex5, ControllerKind::FlydigiApex5),
+            (
+                ControllerKind::FlydigiVader5Pro,
+                ControllerKind::FlydigiVader5Pro,
+            ),
+            (ControllerKind::DualSense, ControllerKind::DualSenseEdge),
+            (ControllerKind::DualSenseEdge, ControllerKind::DualSense),
+        ] {
+            let saved = prepare_profile_for_save(profile(profile_kind), Some(connected))
+                .expect("same-group save allowed");
+            assert_eq!(saved.device, profile_kind);
+        }
     }
 
     #[test]

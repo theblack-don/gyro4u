@@ -3,8 +3,11 @@ use std::{fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    inputs::ControllerFamily,
-    profiles::{EIGHTBITDO_DEFAULT_PROFILE, LEGACY_EIGHTBITDO_DEFAULT_PROFILE, ProfileManager},
+    inputs::{ControllerFamily, ProfileGroup},
+    profiles::{
+        APEX5_DEFAULT_PROFILE, EIGHTBITDO_DEFAULT_PROFILE, LEGACY_EIGHTBITDO_DEFAULT_PROFILE,
+        ProfileManager, TARANTULA_DEFAULT_PROFILE, default_profile_name_for_group,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +17,8 @@ pub enum ControllerPreference {
     DualSense,
     Steam,
     EightBitDo,
+    Flydigi,
+    GameSir,
 }
 
 impl ControllerPreference {
@@ -23,6 +28,8 @@ impl ControllerPreference {
             Self::DualSense => "DualSense",
             Self::Steam => "Steam Controller",
             Self::EightBitDo => "8BitDo",
+            Self::Flydigi => "Flydigi",
+            Self::GameSir => "GameSir",
         }
     }
 }
@@ -38,6 +45,12 @@ pub struct Settings {
     pub steam_profile: String,
     #[serde(default)]
     pub eightbitdo_profile: String,
+    #[serde(default)]
+    pub flydigi_profile: String,
+    #[serde(default)]
+    pub vader5_profile: String,
+    #[serde(default)]
+    pub gamesir_profile: String,
     #[serde(default = "default_true")]
     pub auto_start_daemon: bool,
     #[serde(default)]
@@ -56,23 +69,33 @@ impl Default for Settings {
             dualsense_profile: "Default".into(),
             steam_profile: "SteamDefault".into(),
             eightbitdo_profile: EIGHTBITDO_DEFAULT_PROFILE.into(),
+            flydigi_profile: APEX5_DEFAULT_PROFILE.into(),
+            vader5_profile: crate::profiles::VADER5_DEFAULT_PROFILE.into(),
+            gamesir_profile: TARANTULA_DEFAULT_PROFILE.into(),
             auto_start_daemon: true,
             controller_preference: ControllerPreference::Auto,
         }
     }
 }
 
-fn family_default_profile(family: ControllerFamily) -> &'static str {
+fn group_default_profile(group: ProfileGroup) -> &'static str {
+    default_profile_name_for_group(group)
+}
+
+fn family_profile_group(family: ControllerFamily) -> ProfileGroup {
     match family {
-        ControllerFamily::DualSense => "Default",
-        ControllerFamily::Steam => "SteamDefault",
-        ControllerFamily::EightBitDo => EIGHTBITDO_DEFAULT_PROFILE,
+        ControllerFamily::DualSense => ProfileGroup::DualSense,
+        ControllerFamily::Steam => ProfileGroup::Steam,
+        ControllerFamily::EightBitDo => ProfileGroup::EightBitDo,
+        ControllerFamily::Flydigi => ProfileGroup::FlydigiApex5,
+        ControllerFamily::GameSir => ProfileGroup::GameSirTarantulaPro,
     }
 }
 
 impl Settings {
-    /// Fill per-family profile slots from the legacy single `profile` field.
-    /// Returns true when something changed and the settings need saving.
+    /// Fill legacy per-family profile slots from the single `profile` field and
+    /// seed model-specific slots with their defaults. Returns true when
+    /// something changed and the settings need saving.
     pub fn migrate_profile_memory(&mut self, legacy_family: Option<ControllerFamily>) -> bool {
         let mut changed = false;
         if self.eightbitdo_profile == LEGACY_EIGHTBITDO_DEFAULT_PROFILE {
@@ -87,42 +110,56 @@ impl Settings {
             ControllerFamily::DualSense,
             ControllerFamily::Steam,
             ControllerFamily::EightBitDo,
+            ControllerFamily::Flydigi,
+            ControllerFamily::GameSir,
         ] {
             let slot = match family {
                 ControllerFamily::DualSense => &mut self.dualsense_profile,
                 ControllerFamily::Steam => &mut self.steam_profile,
                 ControllerFamily::EightBitDo => &mut self.eightbitdo_profile,
+                ControllerFamily::Flydigi => &mut self.flydigi_profile,
+                ControllerFamily::GameSir => &mut self.gamesir_profile,
             };
             if slot.is_empty() {
                 *slot = if legacy_family == Some(family) && !self.profile.is_empty() {
                     self.profile.clone()
                 } else {
-                    family_default_profile(family).to_string()
+                    group_default_profile(family_profile_group(family)).to_string()
                 };
                 changed = true;
             }
         }
+        if self.vader5_profile.is_empty() {
+            self.vader5_profile = group_default_profile(ProfileGroup::FlydigiVader5Pro).to_string();
+            changed = true;
+        }
         changed
     }
 
-    pub fn remembered_profile(&self, family: ControllerFamily) -> &str {
-        let name = match family {
-            ControllerFamily::DualSense => &self.dualsense_profile,
-            ControllerFamily::Steam => &self.steam_profile,
-            ControllerFamily::EightBitDo => &self.eightbitdo_profile,
+    pub fn remembered_profile(&self, group: ProfileGroup) -> &str {
+        let name = match group {
+            ProfileGroup::DualSense => &self.dualsense_profile,
+            ProfileGroup::Steam => &self.steam_profile,
+            ProfileGroup::EightBitDo => &self.eightbitdo_profile,
+            ProfileGroup::FlydigiApex5 => &self.flydigi_profile,
+            ProfileGroup::FlydigiVader5Pro => &self.vader5_profile,
+            ProfileGroup::GameSirTarantulaPro => &self.gamesir_profile,
         };
         if name.is_empty() {
-            family_default_profile(family)
+            group_default_profile(group)
         } else {
             name
         }
     }
 
-    pub fn remember_profile(&mut self, family: ControllerFamily, name: &str) {
-        match family {
-            ControllerFamily::DualSense => self.dualsense_profile = name.to_string(),
-            ControllerFamily::Steam => self.steam_profile = name.to_string(),
-            ControllerFamily::EightBitDo => self.eightbitdo_profile = name.to_string(),
+    pub fn remember_profile(&mut self, group: ProfileGroup, name: &str) {
+        match group {
+            ProfileGroup::DualSense => self.dualsense_profile = name.to_string(),
+            ProfileGroup::Steam => self.steam_profile = name.to_string(),
+            ProfileGroup::EightBitDo => self.eightbitdo_profile = name.to_string(),
+            ProfileGroup::FlydigiApex5 => self.flydigi_profile = name.to_string(),
+            ProfileGroup::FlydigiVader5Pro => self.vader5_profile = name.to_string(),
+            ProfileGroup::GameSirTarantulaPro => self.gamesir_profile = name.to_string(),
         }
         self.profile = name.to_string();
     }
@@ -205,6 +242,8 @@ mod tests {
             ControllerPreference::DualSense,
             ControllerPreference::Steam,
             ControllerPreference::EightBitDo,
+            ControllerPreference::Flydigi,
+            ControllerPreference::GameSir,
         ] {
             let json = serde_json::to_string(&preference).expect("serialize");
             let back: ControllerPreference = serde_json::from_str(&json).expect("parse");
@@ -219,20 +258,29 @@ mod tests {
         assert!(parsed.dualsense_profile.is_empty());
         assert!(parsed.steam_profile.is_empty());
         assert!(parsed.eightbitdo_profile.is_empty());
+        assert!(parsed.flydigi_profile.is_empty());
+        assert!(parsed.gamesir_profile.is_empty());
 
         assert!(parsed.migrate_profile_memory(Some(ControllerFamily::DualSense)));
 
         assert_eq!(parsed.dualsense_profile, "Main");
         assert_eq!(parsed.steam_profile, "SteamDefault");
         assert_eq!(parsed.eightbitdo_profile, EIGHTBITDO_DEFAULT_PROFILE);
-        assert_eq!(parsed.profile, "Main");
+        assert_eq!(parsed.flydigi_profile, APEX5_DEFAULT_PROFILE);
+        assert_eq!(parsed.gamesir_profile, TARANTULA_DEFAULT_PROFILE);
         assert_eq!(
-            parsed.remembered_profile(ControllerFamily::DualSense),
-            "Main"
+            parsed.vader5_profile,
+            crate::profiles::VADER5_DEFAULT_PROFILE
+        );
+        assert_eq!(parsed.profile, "Main");
+        assert_eq!(parsed.remembered_profile(ProfileGroup::DualSense), "Main");
+        assert_eq!(
+            parsed.remembered_profile(ProfileGroup::Steam),
+            "SteamDefault"
         );
         assert_eq!(
-            parsed.remembered_profile(ControllerFamily::Steam),
-            "SteamDefault"
+            parsed.remembered_profile(ProfileGroup::FlydigiApex5),
+            APEX5_DEFAULT_PROFILE
         );
     }
 
@@ -246,10 +294,8 @@ mod tests {
         assert_eq!(parsed.dualsense_profile, "Default");
         assert_eq!(parsed.steam_profile, "TheFinals");
         assert_eq!(parsed.eightbitdo_profile, EIGHTBITDO_DEFAULT_PROFILE);
-        assert_eq!(
-            parsed.remembered_profile(ControllerFamily::Steam),
-            "TheFinals"
-        );
+        assert_eq!(parsed.flydigi_profile, APEX5_DEFAULT_PROFILE);
+        assert_eq!(parsed.remembered_profile(ProfileGroup::Steam), "TheFinals");
     }
 
     #[test]
@@ -262,10 +308,8 @@ mod tests {
         assert_eq!(parsed.dualsense_profile, "Default");
         assert_eq!(parsed.steam_profile, "SteamDefault");
         assert_eq!(parsed.eightbitdo_profile, "Pro3");
-        assert_eq!(
-            parsed.remembered_profile(ControllerFamily::EightBitDo),
-            "Pro3"
-        );
+        assert_eq!(parsed.flydigi_profile, APEX5_DEFAULT_PROFILE);
+        assert_eq!(parsed.remembered_profile(ProfileGroup::EightBitDo), "Pro3");
     }
 
     #[test]
@@ -276,23 +320,31 @@ mod tests {
         assert!(parsed.migrate_profile_memory(None));
 
         assert_eq!(
-            parsed.remembered_profile(ControllerFamily::DualSense),
+            parsed.remembered_profile(ProfileGroup::DualSense),
             "Default"
         );
         assert_eq!(
-            parsed.remembered_profile(ControllerFamily::Steam),
+            parsed.remembered_profile(ProfileGroup::Steam),
             "SteamDefault"
         );
         assert_eq!(
-            parsed.remembered_profile(ControllerFamily::EightBitDo),
+            parsed.remembered_profile(ProfileGroup::EightBitDo),
             EIGHTBITDO_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            parsed.remembered_profile(ProfileGroup::FlydigiApex5),
+            APEX5_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            parsed.remembered_profile(ProfileGroup::GameSirTarantulaPro),
+            TARANTULA_DEFAULT_PROFILE
         );
     }
 
     #[test]
     fn migration_does_not_overwrite_existing_family_memory() {
         let mut parsed: Settings = serde_json::from_str(
-            r#"{"theme_id":"default","profile":"Main","dualsense_profile":"Main","steam_profile":"SteamMain","eightbitdo_profile":"Pro3"}"#,
+            r#"{"theme_id":"default","profile":"Main","dualsense_profile":"Main","steam_profile":"SteamMain","eightbitdo_profile":"Pro3","flydigi_profile":"Apex","vader5_profile":"Vader","gamesir_profile":"Tarantula"}"#,
         )
         .expect("parse");
 
@@ -301,10 +353,13 @@ mod tests {
         assert_eq!(parsed.dualsense_profile, "Main");
         assert_eq!(parsed.steam_profile, "SteamMain");
         assert_eq!(parsed.eightbitdo_profile, "Pro3");
+        assert_eq!(parsed.flydigi_profile, "Apex");
+        assert_eq!(parsed.vader5_profile, "Vader");
+        assert_eq!(parsed.gamesir_profile, "Tarantula");
     }
 
     #[test]
-    fn migration_adds_missing_eightbitdo_slot_only() {
+    fn migration_adds_missing_family_slots() {
         let mut parsed: Settings = serde_json::from_str(
             r#"{"theme_id":"default","profile":"Main","dualsense_profile":"Main","steam_profile":"SteamMain"}"#,
         )
@@ -315,6 +370,12 @@ mod tests {
         assert_eq!(parsed.dualsense_profile, "Main");
         assert_eq!(parsed.steam_profile, "SteamMain");
         assert_eq!(parsed.eightbitdo_profile, EIGHTBITDO_DEFAULT_PROFILE);
+        assert_eq!(parsed.flydigi_profile, APEX5_DEFAULT_PROFILE);
+        assert_eq!(parsed.gamesir_profile, TARANTULA_DEFAULT_PROFILE);
+        assert_eq!(
+            parsed.vader5_profile,
+            crate::profiles::VADER5_DEFAULT_PROFILE
+        );
     }
 
     #[test]
@@ -324,10 +385,12 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(parsed.eightbitdo_profile, LEGACY_EIGHTBITDO_DEFAULT_PROFILE);
+        assert!(parsed.vader5_profile.is_empty());
 
         assert!(parsed.migrate_profile_memory(None));
 
         assert_eq!(parsed.eightbitdo_profile, EIGHTBITDO_DEFAULT_PROFILE);
+        assert_eq!(parsed.flydigi_profile, APEX5_DEFAULT_PROFILE);
         assert_eq!(parsed.profile, EIGHTBITDO_DEFAULT_PROFILE);
         assert!(!parsed.migrate_profile_memory(None));
 
@@ -346,51 +409,119 @@ mod tests {
     }
 
     #[test]
-    fn per_family_profile_memory_is_independent() {
+    fn per_group_profile_memory_is_independent() {
         let mut settings = Settings::default();
-        settings.remember_profile(ControllerFamily::DualSense, "Main");
-        settings.remember_profile(ControllerFamily::Steam, "SteamMain");
+        settings.remember_profile(ProfileGroup::DualSense, "Main");
+        settings.remember_profile(ProfileGroup::Steam, "SteamMain");
 
+        assert_eq!(settings.remembered_profile(ProfileGroup::DualSense), "Main");
         assert_eq!(
-            settings.remembered_profile(ControllerFamily::DualSense),
-            "Main"
-        );
-        assert_eq!(
-            settings.remembered_profile(ControllerFamily::Steam),
+            settings.remembered_profile(ProfileGroup::Steam),
             "SteamMain"
         );
         assert_eq!(settings.profile, "SteamMain");
 
-        settings.remember_profile(ControllerFamily::EightBitDo, "Pro3");
+        settings.remember_profile(ProfileGroup::EightBitDo, "Pro3");
+        settings.remember_profile(ProfileGroup::FlydigiApex5, "Apex");
+        settings.remember_profile(ProfileGroup::FlydigiVader5Pro, "Vader");
+        assert_eq!(settings.remembered_profile(ProfileGroup::DualSense), "Main");
         assert_eq!(
-            settings.remembered_profile(ControllerFamily::DualSense),
-            "Main"
-        );
-        assert_eq!(
-            settings.remembered_profile(ControllerFamily::Steam),
+            settings.remembered_profile(ProfileGroup::Steam),
             "SteamMain"
         );
         assert_eq!(
-            settings.remembered_profile(ControllerFamily::EightBitDo),
+            settings.remembered_profile(ProfileGroup::EightBitDo),
             "Pro3"
         );
-        assert_eq!(settings.profile, "Pro3");
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiApex5),
+            "Apex"
+        );
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiVader5Pro),
+            "Vader"
+        );
+        assert_eq!(settings.profile, "Vader");
     }
 
     #[test]
-    fn new_settings_have_family_defaults() {
+    fn new_settings_have_group_defaults() {
         let settings = Settings::default();
         assert_eq!(
-            settings.remembered_profile(ControllerFamily::DualSense),
+            settings.remembered_profile(ProfileGroup::DualSense),
             "Default"
         );
         assert_eq!(
-            settings.remembered_profile(ControllerFamily::Steam),
+            settings.remembered_profile(ProfileGroup::Steam),
             "SteamDefault"
         );
         assert_eq!(
-            settings.remembered_profile(ControllerFamily::EightBitDo),
+            settings.remembered_profile(ProfileGroup::EightBitDo),
             EIGHTBITDO_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiApex5),
+            APEX5_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiVader5Pro),
+            crate::profiles::VADER5_DEFAULT_PROFILE
+        );
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::GameSirTarantulaPro),
+            TARANTULA_DEFAULT_PROFILE
+        );
+    }
+
+    #[test]
+    fn old_settings_fill_vader_slot_without_touching_flydigi() {
+        let mut parsed: Settings = serde_json::from_str(
+            r#"{"theme_id":"default","profile":"Apex5Default","flydigi_profile":"Apex5Default"}"#,
+        )
+        .expect("parse");
+        assert!(parsed.vader5_profile.is_empty());
+
+        assert!(parsed.migrate_profile_memory(Some(ControllerFamily::Flydigi)));
+
+        assert_eq!(parsed.flydigi_profile, APEX5_DEFAULT_PROFILE);
+        assert_eq!(parsed.gamesir_profile, TARANTULA_DEFAULT_PROFILE);
+        assert_eq!(
+            parsed.vader5_profile,
+            crate::profiles::VADER5_DEFAULT_PROFILE
+        );
+        assert_eq!(parsed.profile, APEX5_DEFAULT_PROFILE);
+    }
+
+    #[test]
+    fn apex_and_vader_profile_memory_is_independent() {
+        let mut settings = Settings::default();
+        settings.remember_profile(ProfileGroup::FlydigiApex5, "Apex");
+        settings.remember_profile(ProfileGroup::FlydigiVader5Pro, "Vader");
+
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiApex5),
+            "Apex"
+        );
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiVader5Pro),
+            "Vader"
+        );
+        assert_eq!(settings.flydigi_profile, "Apex");
+        assert_eq!(settings.vader5_profile, "Vader");
+    }
+
+    #[test]
+    fn dualsense_edge_uses_the_dualsense_slot() {
+        let mut settings = Settings::default();
+        settings.remember_profile(
+            crate::inputs::ControllerKind::DualSenseEdge.profile_group(),
+            "EdgeMain",
+        );
+
+        assert_eq!(settings.dualsense_profile, "EdgeMain");
+        assert_eq!(
+            settings.remembered_profile(crate::inputs::ControllerKind::DualSense.profile_group()),
+            "EdgeMain"
         );
     }
 
@@ -400,24 +531,49 @@ mod tests {
             theme_id: "noctalia".into(),
             ..Settings::default()
         };
-        settings.remember_profile(ControllerFamily::DualSense, "Main");
-        settings.remember_profile(ControllerFamily::Steam, "TheFinals");
-        settings.remember_profile(ControllerFamily::EightBitDo, "Pro3");
+        settings.remember_profile(ProfileGroup::DualSense, "Main");
+        settings.remember_profile(ProfileGroup::Steam, "TheFinals");
+        settings.remember_profile(ProfileGroup::EightBitDo, "Pro3");
+        settings.remember_profile(ProfileGroup::FlydigiApex5, "Apex");
+        settings.remember_profile(ProfileGroup::FlydigiVader5Pro, "Vader");
+        settings.remember_profile(ProfileGroup::GameSirTarantulaPro, "Tarantula");
 
         let json = serde_json::to_string(&settings).expect("serialize");
         let back: Settings = serde_json::from_str(&json).expect("parse");
 
-        assert_eq!(back.remembered_profile(ControllerFamily::DualSense), "Main");
+        assert_eq!(back.remembered_profile(ProfileGroup::DualSense), "Main");
+        assert_eq!(back.remembered_profile(ProfileGroup::Steam), "TheFinals");
+        assert_eq!(back.remembered_profile(ProfileGroup::EightBitDo), "Pro3");
+        assert_eq!(back.remembered_profile(ProfileGroup::FlydigiApex5), "Apex");
         assert_eq!(
-            back.remembered_profile(ControllerFamily::Steam),
-            "TheFinals"
+            back.remembered_profile(ProfileGroup::FlydigiVader5Pro),
+            "Vader"
         );
         assert_eq!(
-            back.remembered_profile(ControllerFamily::EightBitDo),
-            "Pro3"
+            back.remembered_profile(ProfileGroup::GameSirTarantulaPro),
+            "Tarantula"
         );
-        assert_eq!(back.profile, "Pro3");
+        assert_eq!(back.vader5_profile, "Vader");
+        assert_eq!(back.gamesir_profile, "Tarantula");
+        assert_eq!(back.profile, "Tarantula");
         assert_eq!(back.controller_preference, ControllerPreference::Auto);
+    }
+
+    #[test]
+    fn gamesir_profile_memory_is_independent() {
+        let mut settings = Settings::default();
+        settings.remember_profile(ProfileGroup::GameSirTarantulaPro, "Tarantula");
+
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::GameSirTarantulaPro),
+            "Tarantula"
+        );
+        assert_eq!(
+            settings.remembered_profile(ProfileGroup::FlydigiApex5),
+            APEX5_DEFAULT_PROFILE
+        );
+        assert_eq!(settings.gamesir_profile, "Tarantula");
+        assert_eq!(settings.profile, "Tarantula");
     }
 
     #[test]
@@ -425,5 +581,7 @@ mod tests {
         assert_eq!(ControllerPreference::Auto.label(), "Automatic");
         assert_eq!(ControllerPreference::Steam.label(), "Steam Controller");
         assert_eq!(ControllerPreference::EightBitDo.label(), "8BitDo");
+        assert_eq!(ControllerPreference::Flydigi.label(), "Flydigi");
+        assert_eq!(ControllerPreference::GameSir.label(), "GameSir");
     }
 }

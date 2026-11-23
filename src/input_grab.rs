@@ -2,8 +2,10 @@ use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 
+use crate::apex5::{FLYDIGI_VID, is_supported_pid};
 use crate::common::{DS_PID, DS_VID, DSE_PID};
 use crate::eightbitdo::{EIGHTBITDO_PRO3_PID, EIGHTBITDO_VID};
+use crate::gamesir::{GAMESIR_VID, TARANTULA_PRO_PID};
 use crate::steam_controller::{
     STEAM_PID_BLE, STEAM_PID_PUCK, STEAM_PID_RECEIVER, STEAM_PID_WIRED, STEAM_VID,
 };
@@ -101,7 +103,9 @@ impl InputGrab {
                 );
             let is_eightbitdo =
                 vendor == Some(EIGHTBITDO_VID) && matches!(product, Some(EIGHTBITDO_PRO3_PID));
-            if !is_dualsense && !is_steam && !is_eightbitdo {
+            let is_flydigi = vendor == Some(FLYDIGI_VID) && product.is_some_and(is_supported_pid);
+            let is_gamesir = vendor == Some(GAMESIR_VID) && product == Some(TARANTULA_PRO_PID);
+            if !is_dualsense && !is_steam && !is_eightbitdo && !is_flydigi && !is_gamesir {
                 continue;
             }
 

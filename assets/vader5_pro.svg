@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 115" width="160" height="115">
+  <!--
+    Original Gyro4U illustration of the Flydigi Vader 5 Pro front.
+    Crisp technical line art with single-rimmed shell, inverted V-bezel with
+    winged emblem, tension-adjust stick rings with MIN/MAX micro-labels and
+    36-tick angled turbine starburst wells, concave D-pad dish, and Y/X/B/A + C/Z
+    front buttons. Geometry matches src/ui/vader5_layout.rs.
+  -->
+  <g fill="none" stroke="#e4ddd6" stroke-width="0.36" stroke-linejoin="round" stroke-linecap="round">
+    <!-- Top shoulder bumpers LB / RB and peeking trigger / extra-bumper tabs. -->
+    <path id="vader-l1" d="M 31.5 20.0 L 31.5 16.5 C 37 13.0, 45 10.0, 52 9.2 C 57 9.5, 63 11.2, 67.5 13.5 C 55 13.5, 42 16.0, 31.5 20.0 Z" stroke-width="0.55"/>
+    <path id="vader-r1" d="M 128.5 20.0 L 128.5 16.5 C 123 13.0, 115 10.0, 108 9.2 C 103 9.5, 97 11.2, 92.5 13.5 C 105 13.5, 118 16.0, 128.5 20.0 Z" stroke-width="0.55"/>
+
+    <!-- Peeking outer trigger tabs (LT / RT) behind each bumper. -->
+    <path d="M 36.5 13.7 C 37.8 9.8, 40.5 9.4, 46.0 10.2" stroke-width="0.34"/>
+    <path d="M 123.5 13.7 C 122.2 9.8, 119.5 9.4, 114.0 10.2" stroke-width="0.34"/>
+
+    <!-- Peeking inner extra-bumper tabs (LM / RM) on the inner bumper slopes. -->
+    <path id="vader-lm" d="M 59.5 10.8 C 63.0 10.4, 65.5 11.2, 67.2 13.4 L 59.5 13.4 Z" stroke-width="0.32"/>
+    <path id="vader-rm" d="M 100.5 10.8 C 97.0 10.4, 94.5 11.2, 92.8 13.4 L 100.5 13.4 Z" stroke-width="0.32"/>
+
+    <!-- Subtle top-center bridge arc between the inner bumpers. -->
+    <path d="M 67.5 13.5 Q 80 12.2 92.5 13.5" stroke-width="0.28"/>
+
+    <!-- Single-rimmed outer controller shell with pointed inner grip tips. -->
+    <path d="M 58 13.5
+             L 102 13.5
+             C 112 14.0, 121 16.5, 129 20.0
+             L 132.0 22.0
+             C 140 40, 148 64, 150.5 83
+             C 152.0 95, 148.5 104.5, 141.5 107.2
+             L 135.5 108.0
+             C 129 95.0, 119 85.0, 107 85.0
+             L 53 85.0
+             C 41 85.0, 31 95.0, 24.5 108.0
+             L 18.5 107.2
+             C 11.5 104.5, 8.0 95, 9.5 83
+             C 12 64, 20 40, 28.0 22.0
+             L 31 20.0
+             C 39 16.5, 48 14.0, 58 13.5 Z" stroke-width="0.6"/>
+
+    <!-- Double-rimmed inverted triangle V-bezel pointing down to (80, 41.8). -->
+    <path d="M 57.5 13.5
+             C 55.5 15.2, 55.5 17.2, 57.5 19.5
+             L 77.2 40.2
+             Q 80 43.0 82.8 40.2
+             L 102.5 19.5
+             C 104.5 17.2, 104.5 15.2, 102.5 13.5" stroke-width="0.28"/>
+    <path d="M 58.3 13.5
+             C 56.5 15.2, 56.5 17.0, 58.3 19.0
+             L 77.7 39.4
+             Q 80 41.8 82.3 39.4
+             L 101.7 19.0
+             C 103.5 17.0, 103.5 15.2, 101.7 13.5" stroke-width="0.24"/>
+
+    <!-- Sharp 4-piece filled Flydigi winged emblem centered at (80, 26). -->
+    <path id="vader-guide" d="M 72.2 21.0 L 79.4 24.5 L 79.4 27.0 L 74.0 23.6 Z" fill="#e4ddd6" stroke-width="0.2"/>
+    <path d="M 75.3 25.0 L 79.4 27.6 L 79.4 32.0 L 77.0 27.4 L 75.8 28.2 Z" fill="#e4ddd6" stroke-width="0.2"/>
+    <path d="M 87.8 21.0 L 80.6 24.5 L 80.6 27.0 L 86.0 23.6 Z" fill="#e4ddd6" stroke-width="0.2"/>
+    <path d="M 84.7 25.0 L 80.6 27.6 L 80.6 32.0 L 83.0 27.4 L 84.2 28.2 Z" fill="#e4ddd6" stroke-width="0.2"/>
+
+    <!-- Diagonal View & Menu pills outside/below the V-bezel walls. -->
+    <rect id="vader-create" x="64.5" y="33.8" width="10" height="5.4" rx="2.7" transform="rotate(42 69.5 36.5)" stroke-width="0.28"/>
+    <rect x="65.1" y="34.4" width="8.8" height="4.2" rx="2.1" transform="rotate(42 69.5 36.5)" stroke-width="0.2"/>
+    <rect x="67.5" y="35.0" width="2.2" height="1.7" stroke-width="0.24"/>
+    <rect x="69.0" y="36.2" width="2.2" height="1.7" fill="#181416" stroke-width="0.24"/>
+
+    <rect id="vader-options" x="87.5" y="33.8" width="10" height="5.4" rx="2.7" transform="rotate(-42 92.5 36.5)" stroke-width="0.28"/>
+    <rect x="88.1" y="34.4" width="8.8" height="4.2" rx="2.1" transform="rotate(-42 92.5 36.5)" stroke-width="0.2"/>
+    <path d="M 90.3 35.3 H 94.7 M 90.3 36.5 H 94.7 M 90.3 37.7 H 94.7" stroke-width="0.26"/>
+
+    <!-- Left tension-adjust stick well at (44.5, 39.0). -->
+    <path d="M 43.6 22.5 L 45.4 22.5 L 44.5 24.1 Z" stroke-width="0.22"/>
+    <circle id="vader-stick-l" cx="44.5" cy="39.0" r="13.2" stroke-width="0.55"/>
+    <circle cx="44.5" cy="39.0" r="10.8" stroke-width="0.24"/>
+    <!-- Radial tick marks around the left tension dial ring (r=11.35..12.65). -->
+    <path d="M 44.50 27.65 L 44.50 26.35
+             M 49.30 28.71 L 49.85 27.54
+             M 53.19 31.70 L 54.19 30.87
+             M 55.46 36.06 L 56.72 35.73
+             M 55.46 41.94 L 56.72 42.27
+             M 52.53 47.03 L 53.44 47.94
+             M 47.44 49.96 L 47.77 51.22
+             M 41.56 49.96 L 41.23 51.22
+             M 36.47 47.03 L 35.56 47.94
+             M 33.54 41.94 L 32.28 42.27
+             M 33.15 39.00 L 31.85 39.00" stroke-width="0.32"/>
+    <!-- Vector micro-labels MIN (-150°, r=12.0, rot=-60°) and MAX (-120°, r=12.0, rot=-30°). -->
+    <path d="M 32.91 33.50 V 32.50 L 33.36 33.15 L 33.81 32.50 V 33.50
+             M 34.16 33.50 V 32.50
+             M 34.51 33.50 V 32.50 L 35.21 33.50 V 32.50" transform="rotate(-60 34.11 33.00)" stroke-width="0.2"/>
+    <path d="M 37.25 29.11 V 28.11 L 37.70 28.76 L 38.15 28.11 V 29.11
+             M 38.45 29.11 L 38.80 28.11 L 39.15 29.11 M 38.55 28.81 H 39.05
+             M 39.40 28.11 L 40.05 29.11 M 40.05 28.11 L 39.40 29.11" transform="rotate(-30 38.50 28.61)" stroke-width="0.2"/>
+    <!-- 36-tick directional turbine starburst ring (r_in=7.1 at k*10° to r_out=9.9 at k*10°+10°). -->
+    <path d="M 51.60 39.00 L 54.25 40.72
+             M 51.49 40.23 L 53.80 42.39
+             M 51.17 41.43 L 53.07 43.95
+             M 50.65 42.55 L 52.08 45.36
+             M 49.94 43.56 L 50.86 46.58
+             M 49.06 44.44 L 49.45 47.57
+             M 48.05 45.15 L 47.89 48.30
+             M 46.93 45.67 L 46.22 48.75
+             M 45.73 45.99 L 44.50 48.90
+             M 44.50 46.10 L 42.78 48.75
+             M 43.27 45.99 L 41.11 48.30
+             M 42.07 45.67 L 39.55 47.57
+             M 40.95 45.15 L 38.14 46.58
+             M 39.94 44.44 L 36.92 45.36
+             M 39.06 43.56 L 35.93 43.95
+             M 38.35 42.55 L 35.20 42.39
+             M 37.83 41.43 L 34.75 40.72
+             M 37.51 40.23 L 34.60 39.00
+             M 37.40 39.00 L 34.75 37.28
+             M 37.51 37.77 L 35.20 35.61
+             M 37.83 36.57 L 35.93 34.05
+             M 38.35 35.45 L 36.92 32.64
+             M 39.06 34.44 L 38.14 31.42
+             M 39.94 33.56 L 39.55 30.43
+             M 40.95 32.85 L 41.11 29.70
+             M 42.07 32.33 L 42.78 29.25
+             M 43.27 32.01 L 44.50 29.10
+             M 44.50 31.90 L 46.22 29.25
+             M 45.73 32.01 L 47.89 29.70
+             M 46.93 32.33 L 49.45 30.43
+             M 48.05 32.85 L 50.86 31.42
+             M 49.06 33.56 L 52.08 32.64
+             M 49.94 34.44 L 53.07 34.05
+             M 50.65 35.45 L 53.80 35.61
+             M 51.17 36.57 L 54.25 37.28
+             M 51.49 37.77 L 54.40 39.00" stroke-width="0.24" opacity="0.85"/>
+    <circle cx="44.5" cy="39.0" r="6.4" stroke-width="0.26"/>
+    <circle cx="44.5" cy="39.0" r="5.6" stroke-width="0.38"/>
+
+    <!-- Right tension-adjust stick well at (99.5, 61.5). -->
+    <path d="M 98.6 45.0 L 100.4 45.0 L 99.5 46.6 Z" stroke-width="0.22"/>
+    <circle id="vader-stick-r" cx="99.5" cy="61.5" r="13.2" stroke-width="0.55"/>
+    <circle cx="99.5" cy="61.5" r="10.8" stroke-width="0.24"/>
+    <!-- Radial tick marks around the right tension dial ring (r=11.35..12.65). -->
+    <path d="M 99.50 50.15 L 99.50 48.85
+             M 104.30 51.21 L 104.85 50.04
+             M 108.19 54.20 L 109.19 53.37
+             M 110.46 58.56 L 111.72 58.23
+             M 110.46 64.44 L 111.72 64.77
+             M 107.53 69.53 L 108.44 70.44
+             M 102.44 72.46 L 102.77 73.72
+             M 96.56 72.46 L 96.23 73.72
+             M 91.47 69.53 L 90.56 70.44
+             M 88.54 64.44 L 87.28 64.77
+             M 88.15 61.50 L 86.85 61.50" stroke-width="0.32"/>
+    <!-- Vector micro-labels MIN (-150°, r=12.0, rot=-60°) and MAX (-120°, r=12.0, rot=-30°). -->
+    <path d="M 87.91 56.00 V 55.00 L 88.36 55.65 L 88.81 55.00 V 56.00
+             M 89.16 56.00 V 55.00
+             M 89.51 56.00 V 55.00 L 90.21 56.00 V 55.00" transform="rotate(-60 89.11 55.50)" stroke-width="0.2"/>
+    <path d="M 92.25 51.61 V 50.61 L 92.70 51.26 L 93.15 50.61 V 51.61
+             M 93.45 51.61 L 93.80 50.61 L 94.15 51.61 M 93.55 51.31 H 94.05
+             M 94.40 50.61 L 95.05 51.61 M 95.05 50.61 L 94.40 51.61" transform="rotate(-30 93.50 51.11)" stroke-width="0.2"/>
+    <!-- 36-tick directional turbine starburst ring (r_in=7.1 at k*10° to r_out=9.9 at k*10°+10°). -->
+    <path d="M 106.60 61.50 L 109.25 63.22
+             M 106.49 62.73 L 108.80 64.89
+             M 106.17 63.93 L 108.07 66.45
+             M 105.65 65.05 L 107.08 67.86
+             M 104.94 66.06 L 105.86 69.08
+             M 104.06 66.94 L 104.45 70.07
+             M 103.05 67.65 L 102.89 70.80
+             M 101.93 68.17 L 101.22 71.25
+             M 100.73 68.49 L 99.50 71.40
+             M 99.50 68.60 L 97.78 71.25
+             M 98.27 68.49 L 96.11 70.80
+             M 97.07 68.17 L 94.55 70.07
+             M 95.95 67.65 L 93.14 69.08
+             M 94.94 66.94 L 91.92 67.86
+             M 94.06 66.06 L 90.93 66.45
+             M 93.35 65.05 L 90.20 64.89
+             M 92.83 63.93 L 89.75 63.22
+             M 92.51 62.73 L 89.60 61.50
+             M 92.40 61.50 L 89.75 59.78
+             M 92.51 60.27 L 90.20 58.11
+             M 92.83 59.07 L 90.93 56.55
+             M 93.35 57.95 L 91.92 55.14
+             M 94.06 56.94 L 93.14 53.92
+             M 94.94 56.06 L 94.55 52.93
+             M 95.95 55.35 L 96.11 52.20
+             M 97.07 54.83 L 97.78 51.75
+             M 98.27 54.51 L 99.50 51.60
+             M 99.50 54.40 L 101.22 51.75
+             M 100.73 54.51 L 102.89 52.20
+             M 101.93 54.83 L 104.45 52.93
+             M 103.05 55.35 L 105.86 53.92
+             M 104.06 56.06 L 107.08 55.14
+             M 104.94 56.94 L 108.07 56.55
+             M 105.65 57.95 L 108.80 58.11
+             M 106.17 59.07 L 109.25 59.78
+             M 106.49 60.27 L 109.40 61.50" stroke-width="0.24" opacity="0.85"/>
+    <circle cx="99.5" cy="61.5" r="6.4" stroke-width="0.26"/>
+    <circle cx="99.5" cy="61.5" r="5.6" stroke-width="0.38"/>
+
+    <!-- Rounded-diamond D-pad dish at (62.5, 61.5) with concave 4-way cross. -->
+    <path d="M 62.5 48.0
+             C 65.8 48.0, 76.0 58.2, 76.0 61.5
+             C 76.0 64.8, 65.8 75.0, 62.5 75.0
+             C 59.2 75.0, 49.0 64.8, 49.0 61.5
+             C 49.0 58.2, 59.2 48.0, 62.5 48.0 Z" stroke-width="0.45"/>
+    <path d="M 59.2 49.8
+             Q 62.5 48.3 65.8 49.8
+             V 55.2
+             C 65.8 56.9, 66.8 57.9, 68.5 57.9
+             H 74.2
+             Q 75.7 61.5 74.2 65.1
+             H 68.5
+             C 66.8 65.1, 65.8 66.1, 65.8 67.8
+             V 73.2
+             Q 62.5 74.7 59.2 73.2
+             V 67.8
+             C 59.2 66.1, 58.2 65.1, 56.5 65.1
+             H 50.8
+             Q 49.3 61.5 50.8 57.9
+             H 56.5
+             C 58.2 57.9, 59.2 56.9, 59.2 55.2 Z" stroke-width="0.32"/>
+
+    <!-- Face buttons Y / X / B / A centered around (118, 39). -->
+    <circle id="vader-face-y" cx="118.0" cy="29.0" r="5.0" stroke-width="0.48"/>
+    <circle cx="118.0" cy="29.0" r="4.3" stroke-width="0.22"/>
+
+    <circle id="vader-face-x" cx="108.0" cy="39.0" r="5.0" stroke-width="0.48"/>
+    <circle cx="108.0" cy="39.0" r="4.3" stroke-width="0.22"/>
+
+    <circle id="vader-face-b" cx="128.0" cy="39.0" r="5.0" stroke-width="0.48"/>
+    <circle cx="128.0" cy="39.0" r="4.3" stroke-width="0.22"/>
+
+    <circle id="vader-face-a" cx="118.0" cy="49.0" r="5.0" stroke-width="0.48"/>
+    <circle cx="118.0" cy="49.0" r="4.3" stroke-width="0.22"/>
+
+    <!-- Extra front buttons C and Z below/right of the face diamond. -->
+    <circle id="vader-c" cx="123.5" cy="64.0" r="4.4" stroke-width="0.45"/>
+    <circle cx="123.5" cy="64.0" r="3.7" stroke-width="0.2"/>
+
+    <circle id="vader-z" cx="133.0" cy="56.0" r="4.4" stroke-width="0.45"/>
+    <circle cx="133.0" cy="56.0" r="3.7" stroke-width="0.2"/>
+  </g>
+</svg>

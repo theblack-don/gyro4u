@@ -1222,14 +1222,14 @@ mod tests {
             })
             .collect();
         assert_eq!(steam_buttons.len(), 16);
-        // The global extra space also holds 8BitDo buttons, which Steam reports
-        // cannot produce.
+        // The global extra space also holds 8BitDo and Flydigi buttons, which
+        // Steam reports cannot produce.
         assert_eq!(
             ALL_BUTTONS
                 .iter()
                 .filter(|b| b.to_extra_mask().is_some())
                 .count(),
-            20
+            29
         );
         for button in steam_buttons {
             let mask = button.to_extra_mask().unwrap();

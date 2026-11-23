@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::common::{HapticPattern, MicLedState, SpeakerMode, TouchpadMode};
 use crate::gyro::GyroConfig;
-use crate::inputs::Button;
+use crate::inputs::{Button, ProfileGroup};
 use crate::profiles::TriggerConfig;
 use crate::remap::{BindingSlot, Layer, PressTiming};
 use crate::stick_mouse::StickMouseConfig;
@@ -21,6 +21,14 @@ pub(crate) enum ProgressUpdate {
     Complete,
     Error(String),
     LatestVersion(String),
+}
+
+#[derive(Default, PartialEq, Eq, Copy, Clone, Debug)]
+pub(crate) enum ProfileFilter {
+    #[default]
+    Current,
+    All,
+    Group(ProfileGroup),
 }
 
 #[derive(PartialEq, Copy, Clone)]

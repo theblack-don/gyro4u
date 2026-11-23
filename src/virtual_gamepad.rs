@@ -3,15 +3,18 @@
 use anyhow::Result;
 
 use crate::inputs::{
-    BTN_CIRCLE, BTN_CREATE, BTN_CROSS, BTN_EDGE_FN_LEFT, BTN_EDGE_FN_RIGHT, BTN_EDGE_PADDLE_LEFT,
-    BTN_EDGE_PADDLE_RIGHT, BTN_L1, BTN_L2, BTN_L3, BTN_OPTIONS, BTN_PS, BTN_R1, BTN_R2, BTN_R3,
-    BTN_SQUARE, BTN_TRIANGLE, ControllerKind, ControllerState, DPAD_E, DPAD_N, DPAD_NE, DPAD_NW,
-    DPAD_S, DPAD_SE, DPAD_SW, DPAD_W, EXTRA_BTN_EIGHTBITDO_L4, EXTRA_BTN_EIGHTBITDO_PL,
-    EXTRA_BTN_EIGHTBITDO_PR, EXTRA_BTN_EIGHTBITDO_R4, EXTRA_BTN_L4, EXTRA_BTN_L5,
-    EXTRA_BTN_LEFT_GRIP, EXTRA_BTN_LEFT_PAD, EXTRA_BTN_LEFT_PAD_TOUCH, EXTRA_BTN_LEFT_STICK_TOUCH,
-    EXTRA_BTN_LEFT_TRIGGER_CLICK, EXTRA_BTN_QAM, EXTRA_BTN_R4, EXTRA_BTN_R5, EXTRA_BTN_RIGHT_GRIP,
-    EXTRA_BTN_RIGHT_PAD, EXTRA_BTN_RIGHT_PAD_TOUCH, EXTRA_BTN_RIGHT_STICK_TOUCH,
-    EXTRA_BTN_RIGHT_TRIGGER_CLICK, EXTRA_BTN_STEAM,
+    APEX_LM, APEX_M1, APEX_M2, APEX_M3, APEX_M4, APEX_RM, BTN_CIRCLE, BTN_CREATE, BTN_CROSS,
+    BTN_EDGE_FN_LEFT, BTN_EDGE_FN_RIGHT, BTN_EDGE_PADDLE_LEFT, BTN_EDGE_PADDLE_RIGHT,
+    BTN_GAMESIR_C1, BTN_GAMESIR_C2, BTN_GAMESIR_C3, BTN_GAMESIR_C4, BTN_GAMESIR_L4, BTN_GAMESIR_R4,
+    BTN_GAMESIR_SHARE, BTN_GAMESIR_T1, BTN_GAMESIR_T2, BTN_GAMESIR_T3, BTN_L1, BTN_L2, BTN_L3,
+    BTN_OPTIONS, BTN_PS, BTN_R1, BTN_R2, BTN_R3, BTN_SQUARE, BTN_TRIANGLE, ControllerKind,
+    ControllerState, DPAD_E, DPAD_N, DPAD_NE, DPAD_NW, DPAD_S, DPAD_SE, DPAD_SW, DPAD_W,
+    EXTRA_BTN_EIGHTBITDO_L4, EXTRA_BTN_EIGHTBITDO_PL, EXTRA_BTN_EIGHTBITDO_PR,
+    EXTRA_BTN_EIGHTBITDO_R4, EXTRA_BTN_L4, EXTRA_BTN_L5, EXTRA_BTN_LEFT_GRIP, EXTRA_BTN_LEFT_PAD,
+    EXTRA_BTN_LEFT_PAD_TOUCH, EXTRA_BTN_LEFT_STICK_TOUCH, EXTRA_BTN_LEFT_TRIGGER_CLICK,
+    EXTRA_BTN_QAM, EXTRA_BTN_R4, EXTRA_BTN_R5, EXTRA_BTN_RIGHT_GRIP, EXTRA_BTN_RIGHT_PAD,
+    EXTRA_BTN_RIGHT_PAD_TOUCH, EXTRA_BTN_RIGHT_STICK_TOUCH, EXTRA_BTN_RIGHT_TRIGGER_CLICK,
+    EXTRA_BTN_STEAM, VADER_C, VADER_CIRCLE, VADER_Z,
 };
 use crate::uinput::{EV_ABS, EV_KEY, UinputDevice, UinputSpec};
 
@@ -74,6 +77,41 @@ const EIGHTBITDO_EXTRA_KEYS: [(u32, u16); 4] = [
     (EXTRA_BTN_EIGHTBITDO_PR, BTN_TRIGGER_HAPPY4),
 ];
 
+const APEX5_EXTRA_KEYS: [(u32, u16); 6] = [
+    (APEX_LM, BTN_TRIGGER_HAPPY1),
+    (APEX_RM, BTN_TRIGGER_HAPPY2),
+    (APEX_M1, BTN_TRIGGER_HAPPY3),
+    (APEX_M2, BTN_TRIGGER_HAPPY4),
+    (APEX_M3, BTN_TRIGGER_HAPPY5),
+    (APEX_M4, BTN_TRIGGER_HAPPY6),
+];
+
+const VADER5_EXTRA_KEYS: [(u32, u16); 9] = [
+    (APEX_LM, BTN_TRIGGER_HAPPY1),
+    (APEX_RM, BTN_TRIGGER_HAPPY2),
+    (APEX_M1, BTN_TRIGGER_HAPPY3),
+    (APEX_M2, BTN_TRIGGER_HAPPY4),
+    (APEX_M3, BTN_TRIGGER_HAPPY5),
+    (APEX_M4, BTN_TRIGGER_HAPPY6),
+    (VADER_C, BTN_TRIGGER_HAPPY7),
+    (VADER_Z, BTN_TRIGGER_HAPPY8),
+    (VADER_CIRCLE, BTN_TRIGGER_HAPPY9),
+];
+
+// GameSir extras live in ControllerState.buttons, above the Sony mask.
+const GAMESIR_EXTRA_KEYS: [(u32, u16); 10] = [
+    (BTN_GAMESIR_L4, BTN_TRIGGER_HAPPY1),
+    (BTN_GAMESIR_R4, BTN_TRIGGER_HAPPY2),
+    (BTN_GAMESIR_T1, BTN_TRIGGER_HAPPY3),
+    (BTN_GAMESIR_T2, BTN_TRIGGER_HAPPY4),
+    (BTN_GAMESIR_T3, BTN_TRIGGER_HAPPY5),
+    (BTN_GAMESIR_C1, BTN_TRIGGER_HAPPY6),
+    (BTN_GAMESIR_C2, BTN_TRIGGER_HAPPY7),
+    (BTN_GAMESIR_C3, BTN_TRIGGER_HAPPY8),
+    (BTN_GAMESIR_C4, BTN_TRIGGER_HAPPY9),
+    (BTN_GAMESIR_SHARE, BTN_TRIGGER_HAPPY10),
+];
+
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 const ABS_Z: u16 = 0x02;
@@ -122,10 +160,23 @@ impl VirtualGamepad {
             keys.extend(STEAM_EXTRA_KEYS.iter().map(|(_, key)| *key));
         } else if kind.is_eightbitdo() {
             keys.extend(EIGHTBITDO_EXTRA_KEYS.iter().map(|(_, key)| *key));
+        } else if kind.is_flydigi() {
+            if kind == ControllerKind::FlydigiVader5Pro {
+                keys.extend(VADER5_EXTRA_KEYS.iter().map(|(_, key)| *key));
+            } else {
+                keys.extend(APEX5_EXTRA_KEYS.iter().map(|(_, key)| *key));
+            }
+        } else if kind.is_gamesir() {
+            keys.extend(GAMESIR_EXTRA_KEYS.iter().map(|(_, key)| *key));
         }
         let name = match kind.family() {
             crate::inputs::ControllerFamily::Steam => "Gyro4U Steam Controller",
             crate::inputs::ControllerFamily::EightBitDo => "Gyro4U 8BitDo Pro 3",
+            crate::inputs::ControllerFamily::Flydigi => match kind {
+                ControllerKind::FlydigiVader5Pro => "Gyro4U Flydigi Vader 5 Pro",
+                _ => "Gyro4U Flydigi Apex 5",
+            },
+            crate::inputs::ControllerFamily::GameSir => "Gyro4U GameSir Tarantula Pro",
             crate::inputs::ControllerFamily::DualSense => "Gyro4U DualSense Wireless Controller",
         };
         let dev = UinputDevice::create(UinputSpec {
@@ -215,6 +266,19 @@ impl VirtualGamepad {
             for (mask, key) in EIGHTBITDO_EXTRA_KEYS {
                 changed |= dev.emit(EV_KEY, key, (s.extra_buttons & mask != 0) as i32);
             }
+        } else if self.kind.is_flydigi() {
+            let keys = if self.kind == ControllerKind::FlydigiVader5Pro {
+                &VADER5_EXTRA_KEYS[..]
+            } else {
+                &APEX5_EXTRA_KEYS[..]
+            };
+            for &(mask, key) in keys {
+                changed |= dev.emit(EV_KEY, key, (s.extra_buttons & mask != 0) as i32);
+            }
+        } else if self.kind.is_gamesir() {
+            for (mask, key) in GAMESIR_EXTRA_KEYS {
+                changed |= dev.emit(EV_KEY, key, (s.buttons & mask != 0) as i32);
+            }
         }
 
         if !changed {
@@ -270,6 +334,95 @@ mod tests {
             assert!(mask <= crate::inputs::EXTRA_BTN_EIGHTBITDO_PR);
         }
         for (_, key) in EIGHTBITDO_EXTRA_KEYS {
+            assert!(!KEYS.contains(&key), "{key:#x} collides with a base key");
+        }
+    }
+
+    #[test]
+    fn apex5_extra_keys_cover_happy1_through_6() {
+        let masks: HashSet<u32> = APEX5_EXTRA_KEYS.iter().map(|(mask, _)| *mask).collect();
+        let keys: HashSet<u16> = APEX5_EXTRA_KEYS.iter().map(|(_, key)| *key).collect();
+        assert_eq!(masks.len(), 6);
+        assert_eq!(keys.len(), 6);
+        assert_eq!(
+            keys,
+            HashSet::from([
+                BTN_TRIGGER_HAPPY1,
+                BTN_TRIGGER_HAPPY2,
+                BTN_TRIGGER_HAPPY3,
+                BTN_TRIGGER_HAPPY4,
+                BTN_TRIGGER_HAPPY5,
+                BTN_TRIGGER_HAPPY6,
+            ])
+        );
+        for (mask, _) in APEX5_EXTRA_KEYS {
+            assert_eq!(mask.count_ones(), 1);
+            assert!(mask >= crate::inputs::APEX_LM);
+            assert!(mask <= crate::inputs::APEX_M4);
+        }
+        for (_, key) in APEX5_EXTRA_KEYS {
+            assert!(!KEYS.contains(&key), "{key:#x} collides with a base key");
+        }
+    }
+
+    #[test]
+    fn vader5_extra_keys_cover_happy1_through_9() {
+        let masks: HashSet<u32> = VADER5_EXTRA_KEYS.iter().map(|(mask, _)| *mask).collect();
+        let keys: HashSet<u16> = VADER5_EXTRA_KEYS.iter().map(|(_, key)| *key).collect();
+        assert_eq!(masks.len(), 9);
+        assert_eq!(keys.len(), 9);
+        assert_eq!(
+            keys,
+            HashSet::from([
+                BTN_TRIGGER_HAPPY1,
+                BTN_TRIGGER_HAPPY2,
+                BTN_TRIGGER_HAPPY3,
+                BTN_TRIGGER_HAPPY4,
+                BTN_TRIGGER_HAPPY5,
+                BTN_TRIGGER_HAPPY6,
+                BTN_TRIGGER_HAPPY7,
+                BTN_TRIGGER_HAPPY8,
+                BTN_TRIGGER_HAPPY9,
+            ])
+        );
+        for (mask, _) in VADER5_EXTRA_KEYS {
+            assert_eq!(mask.count_ones(), 1);
+            assert!(mask >= crate::inputs::APEX_LM);
+            assert!(mask <= crate::inputs::VADER_CIRCLE);
+        }
+        for (_, key) in VADER5_EXTRA_KEYS {
+            assert!(!KEYS.contains(&key), "{key:#x} collides with a base key");
+        }
+    }
+
+    #[test]
+    fn gamesir_extra_keys_cover_happy1_through_10_in_buttons() {
+        let masks: HashSet<u32> = GAMESIR_EXTRA_KEYS.iter().map(|(mask, _)| *mask).collect();
+        let keys: HashSet<u16> = GAMESIR_EXTRA_KEYS.iter().map(|(_, key)| *key).collect();
+        assert_eq!(masks.len(), 10);
+        assert_eq!(keys.len(), 10);
+        assert_eq!(
+            keys,
+            HashSet::from([
+                BTN_TRIGGER_HAPPY1,
+                BTN_TRIGGER_HAPPY2,
+                BTN_TRIGGER_HAPPY3,
+                BTN_TRIGGER_HAPPY4,
+                BTN_TRIGGER_HAPPY5,
+                BTN_TRIGGER_HAPPY6,
+                BTN_TRIGGER_HAPPY7,
+                BTN_TRIGGER_HAPPY8,
+                BTN_TRIGGER_HAPPY9,
+                BTN_TRIGGER_HAPPY10,
+            ])
+        );
+        for (mask, _) in GAMESIR_EXTRA_KEYS {
+            assert_eq!(mask.count_ones(), 1);
+            assert!(mask >= crate::inputs::BTN_GAMESIR_L4);
+            assert!(mask <= crate::inputs::BTN_GAMESIR_SHARE);
+            assert_eq!(mask & 0xe000_0000, 0, "bits 29-31 stay reserved");
+        }
+        for (_, key) in GAMESIR_EXTRA_KEYS {
             assert!(!KEYS.contains(&key), "{key:#x} collides with a base key");
         }
     }

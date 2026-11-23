@@ -26,8 +26,18 @@ pub(crate) fn paint(
         .maintain_aspect_ratio(true)
         .paint_at(ui, layout.art_rect());
 
+    let has_live_state = state.is_some();
     let state = state.copied().unwrap_or_default();
-    paint_overlays(painter, layout, &state, selected, hovered, abxy, c);
+    paint_overlays(
+        painter,
+        layout,
+        &state,
+        has_live_state,
+        selected,
+        hovered,
+        abxy,
+        c,
+    );
 }
 
 fn scaled_font(scale: f32, base: f32, min: f32, max: f32) -> FontId {
@@ -38,10 +48,12 @@ fn scaled_corner(scale: f32, units: f32) -> CornerRadius {
     CornerRadius::same((units * scale).round().clamp(0.0, 255.0) as u8)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_overlays(
     painter: &Painter,
     layout: &EightBitDoLayout,
     state: &ControllerState,
+    has_live_state: bool,
     selected: Option<Button>,
     hovered: Option<Button>,
     abxy: AbxyLayout,
@@ -56,13 +68,13 @@ fn paint_overlays(
         (LEFT_TRIGGER_BAR, state.l2, "L2"),
         (RIGHT_TRIGGER_BAR, state.r2, "R2"),
     ] {
+        let amount = value as f32 / 255.0;
         let rect = layout.rect(rect);
         painter.rect_filled(
             rect,
             scaled_corner(scale, 3.2),
             Color32::from_black_alpha(65),
         );
-        let amount = value as f32 / 255.0;
         if amount > 0.0 {
             let fill = Rect::from_min_max(
                 Pos2::new(rect.min.x, rect.max.y - rect.height() * amount),
@@ -85,51 +97,46 @@ fn paint_overlays(
         );
     }
 
-    for (rect, button) in [
-        (LEFT_BUMPER, Button::L1),
-        (RIGHT_BUMPER, Button::R1),
-        (LEFT_EXTRA_BUMPER, Button::EightBitDoL4),
-        (RIGHT_EXTRA_BUMPER, Button::EightBitDoR4),
-    ] {
-        if button.is_pressed(state) {
-            painter.rect_filled(
-                layout.rect(rect),
-                scaled_corner(scale, 3.4),
-                accent_alpha(c, 190),
-            );
-        }
-    }
-    for (rect, label) in [
-        (LEFT_BUMPER, "L1"),
-        (RIGHT_BUMPER, "R1"),
-        (LEFT_EXTRA_BUMPER, "L4"),
-        (RIGHT_EXTRA_BUMPER, "R4"),
+    for (rect, button, label) in [
+        (LEFT_BUMPER, Button::L1, "L1"),
+        (RIGHT_BUMPER, Button::R1, "R1"),
+        (LEFT_EXTRA_BUMPER, Button::EightBitDoL4, "L4"),
+        (RIGHT_EXTRA_BUMPER, Button::EightBitDoR4, "R4"),
     ] {
         let rect = layout.rect(rect);
+        let pressed = button.is_pressed(state);
+        let fill = if pressed {
+            accent_alpha(c, 190)
+        } else {
+            Color32::from_black_alpha(65)
+        };
+        painter.rect_filled(rect, scaled_corner(scale, 3.4), fill);
+        painter.rect_stroke(
+            rect,
+            scaled_corner(scale, 3.4),
+            Stroke::new(1.0_f32, dim),
+            StrokeKind::Inside,
+        );
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
             label,
             scaled_font(scale, 2.2, 8.0, 13.0),
-            white,
+            if pressed { white } else { dim },
         );
     }
 
-    for (rect, button, glyph) in [
-        (CREATE_PILL, Button::Create, "−"),
-        (OPTIONS_PILL, Button::Options, "+"),
+    for (rect, button) in [
+        (CREATE_PILL, Button::Create),
+        (OPTIONS_PILL, Button::Options),
     ] {
-        let rect = layout.rect(rect);
         if button.is_pressed(state) {
-            painter.rect_filled(rect, scaled_corner(scale, 2.5), accent_alpha(c, 190));
+            painter.rect_filled(
+                layout.rect(rect),
+                scaled_corner(scale, 1.6),
+                accent_alpha(c, 190),
+            );
         }
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            glyph,
-            scaled_font(scale, 2.2, 8.0, 12.0),
-            white,
-        );
     }
 
     if Button::PS.is_pressed(state) {
@@ -140,28 +147,19 @@ fn paint_overlays(
         );
     }
 
-    for (button, center, glyph) in [
-        (Button::DPadUp, DPAD_UP, "▲"),
-        (Button::DPadRight, DPAD_RIGHT, "▶"),
-        (Button::DPadDown, DPAD_DOWN, "▼"),
-        (Button::DPadLeft, DPAD_LEFT, "◀"),
+    for (button, center) in [
+        (Button::DPadUp, DPAD_UP),
+        (Button::DPadRight, DPAD_RIGHT),
+        (Button::DPadDown, DPAD_DOWN),
+        (Button::DPadLeft, DPAD_LEFT),
     ] {
-        let center = layout.point(center);
-        let pressed = button.is_pressed(state);
-        if pressed {
-            painter.circle_filled(center, DPAD_HIT_RADIUS * scale, accent_alpha(c, 190));
+        if button.is_pressed(state) {
+            painter.circle_filled(
+                layout.point(center),
+                DPAD_HIT_RADIUS * scale,
+                accent_alpha(c, 190),
+            );
         }
-        painter.text(
-            center,
-            Align2::CENTER_CENTER,
-            glyph,
-            scaled_font(scale, 2.0, 7.0, 11.0),
-            if pressed {
-                white
-            } else {
-                Color32::from_white_alpha(165)
-            },
-        );
     }
 
     for (button, center) in [
@@ -197,55 +195,48 @@ fn paint_overlays(
         if button.is_pressed(state) {
             painter.circle_stroke(center, radius + 2.0, Stroke::new(2.0_f32, accent));
         }
-        let nx = (raw.0 as f32 - 128.0) / 128.0;
-        let ny = (raw.1 as f32 - 128.0) / 128.0;
-        let dot = center + vec2(nx, ny) * (radius * 0.55);
-        let dot_radius = (radius * 0.22).max(3.0);
-        painter.circle_filled(dot, dot_radius, white);
-        painter.circle_stroke(
-            dot,
-            dot_radius,
-            Stroke::new(1.0_f32, Color32::from_black_alpha(180)),
-        );
-        painter.text(
-            if button == Button::L3 {
-                center + vec2(-(radius + 5.0), 0.0)
-            } else {
-                center + vec2(radius + 5.0, 0.0)
-            },
-            if button == Button::L3 {
-                Align2::RIGHT_CENTER
-            } else {
-                Align2::LEFT_CENTER
-            },
-            label,
-            scaled_font(scale, 2.2, 8.0, 12.0),
-            dim,
-        );
+        if has_live_state {
+            let nx = (raw.0 as f32 - 128.0) / 128.0;
+            let ny = (raw.1 as f32 - 128.0) / 128.0;
+            let dot = center + vec2(nx, ny) * (radius * 0.55);
+            let dot_radius = (radius * 0.22).max(3.0);
+            painter.circle_filled(dot, dot_radius, white);
+            painter.circle_stroke(
+                dot,
+                dot_radius,
+                Stroke::new(1.0_f32, Color32::from_black_alpha(180)),
+            );
+        }
+        if button.is_pressed(state) {
+            painter.text(
+                if button == Button::L3 {
+                    center + vec2(-(radius + 5.0), 0.0)
+                } else {
+                    center + vec2(radius + 5.0, 0.0)
+                },
+                if button == Button::L3 {
+                    Align2::RIGHT_CENTER
+                } else {
+                    Align2::LEFT_CENTER
+                },
+                label,
+                scaled_font(scale, 2.2, 8.0, 12.0),
+                dim,
+            );
+        }
     }
 
-    for (rect, button, label) in [
-        (PL_PADDLE, Button::EightBitDoPL, "PL"),
-        (PR_PADDLE, Button::EightBitDoPR, "PR"),
+    for (rect, button) in [
+        (PL_PADDLE, Button::EightBitDoPL),
+        (PR_PADDLE, Button::EightBitDoPR),
     ] {
-        let rect = layout.rect(rect);
         if button.is_pressed(state) {
-            painter.rect_filled(rect, scaled_corner(scale, 3.4), accent_alpha(c, 175));
+            painter.rect_filled(
+                layout.rect(rect),
+                scaled_corner(scale, 3.4),
+                accent_alpha(c, 175),
+            );
         }
-        painter.text(
-            rect.center() + vec2(0.0, -1.8 * scale),
-            Align2::CENTER_CENTER,
-            label,
-            scaled_font(scale, 2.4, 9.0, 14.0),
-            white,
-        );
-        painter.text(
-            rect.center() + vec2(0.0, 4.6 * scale),
-            Align2::CENTER_CENTER,
-            "rear",
-            scaled_font(scale, 1.6, 6.0, 9.0),
-            dim,
-        );
     }
 
     for hotspot in EIGHTBITDO_HOTSPOTS {

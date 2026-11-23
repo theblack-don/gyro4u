@@ -33,6 +33,17 @@ pub const BTN_EDGE_FN_LEFT: u32 = 1 << 15;
 pub const BTN_EDGE_FN_RIGHT: u32 = 1 << 16;
 pub const BTN_EDGE_PADDLE_LEFT: u32 = 1 << 17;
 pub const BTN_EDGE_PADDLE_RIGHT: u32 = 1 << 18;
+// GameSir Tarantula Pro extras sit above the Sony range; bits 29-31 stay reserved.
+pub const BTN_GAMESIR_L4: u32 = 1 << 19;
+pub const BTN_GAMESIR_R4: u32 = 1 << 20;
+pub const BTN_GAMESIR_T1: u32 = 1 << 21;
+pub const BTN_GAMESIR_T2: u32 = 1 << 22;
+pub const BTN_GAMESIR_T3: u32 = 1 << 23;
+pub const BTN_GAMESIR_C1: u32 = 1 << 24;
+pub const BTN_GAMESIR_C2: u32 = 1 << 25;
+pub const BTN_GAMESIR_C3: u32 = 1 << 26;
+pub const BTN_GAMESIR_C4: u32 = 1 << 27;
+pub const BTN_GAMESIR_SHARE: u32 = 1 << 28;
 
 // Steam Controller extras live outside the Sony-shaped u32 mask.
 pub const EXTRA_BTN_STEAM: u32 = 1 << 0;
@@ -55,6 +66,15 @@ pub const EXTRA_BTN_EIGHTBITDO_L4: u32 = 1 << 16;
 pub const EXTRA_BTN_EIGHTBITDO_R4: u32 = 1 << 17;
 pub const EXTRA_BTN_EIGHTBITDO_PL: u32 = 1 << 18;
 pub const EXTRA_BTN_EIGHTBITDO_PR: u32 = 1 << 19;
+pub const APEX_LM: u32 = 1 << 20;
+pub const APEX_RM: u32 = 1 << 21;
+pub const APEX_M1: u32 = 1 << 22;
+pub const APEX_M2: u32 = 1 << 23;
+pub const APEX_M3: u32 = 1 << 24;
+pub const APEX_M4: u32 = 1 << 25;
+pub const VADER_C: u32 = 1 << 26;
+pub const VADER_Z: u32 = 1 << 27;
+pub const VADER_CIRCLE: u32 = 1 << 28;
 
 pub const DS_GYRO_COUNTS_PER_DPS: f32 = 16.0;
 pub const DS_ACCEL_COUNTS_PER_G: f32 = 8192.0;
@@ -179,6 +199,8 @@ pub enum ControllerFamily {
     DualSense,
     Steam,
     EightBitDo,
+    Flydigi,
+    GameSir,
 }
 
 impl ControllerFamily {
@@ -190,11 +212,21 @@ impl ControllerFamily {
         matches!(self, Self::EightBitDo)
     }
 
+    pub fn is_flydigi(self) -> bool {
+        matches!(self, Self::Flydigi)
+    }
+
+    pub fn is_gamesir(self) -> bool {
+        matches!(self, Self::GameSir)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::DualSense => "DualSense",
             Self::Steam => "Steam Controller",
             Self::EightBitDo => "8BitDo",
+            Self::Flydigi => "Flydigi",
+            Self::GameSir => "GameSir",
         }
     }
 
@@ -203,6 +235,8 @@ impl ControllerFamily {
             Self::DualSense => ControllerPreference::DualSense,
             Self::Steam => ControllerPreference::Steam,
             Self::EightBitDo => ControllerPreference::EightBitDo,
+            Self::Flydigi => ControllerPreference::Flydigi,
+            Self::GameSir => ControllerPreference::GameSir,
         }
     }
 
@@ -211,6 +245,44 @@ impl ControllerFamily {
             Self::DualSense => 0,
             Self::Steam => 1,
             Self::EightBitDo => 2,
+            Self::Flydigi => 3,
+            Self::GameSir => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ProfileGroup {
+    DualSense,
+    Steam,
+    EightBitDo,
+    FlydigiApex5,
+    FlydigiVader5Pro,
+    GameSirTarantulaPro,
+}
+
+pub const PROFILE_GROUPS: [ProfileGroup; 6] = [
+    ProfileGroup::DualSense,
+    ProfileGroup::Steam,
+    ProfileGroup::EightBitDo,
+    ProfileGroup::FlydigiApex5,
+    ProfileGroup::FlydigiVader5Pro,
+    ProfileGroup::GameSirTarantulaPro,
+];
+
+impl ProfileGroup {
+    pub fn all() -> [ProfileGroup; 6] {
+        PROFILE_GROUPS
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DualSense => "DualSense / Edge",
+            Self::Steam => "Steam Controller (2026)",
+            Self::EightBitDo => "8BitDo Pro 3",
+            Self::FlydigiApex5 => "Flydigi Apex 5",
+            Self::FlydigiVader5Pro => "Flydigi Vader 5 Pro",
+            Self::GameSirTarantulaPro => "GameSir Tarantula Pro",
         }
     }
 }
@@ -222,6 +294,9 @@ pub enum ControllerKind {
     DualSenseEdge,
     SteamController,
     EightBitDoPro3,
+    FlydigiApex5,
+    FlydigiVader5Pro,
+    GameSirTarantulaPro,
 }
 
 impl ControllerKind {
@@ -231,6 +306,9 @@ impl ControllerKind {
             Self::DualSenseEdge => "DualSense Edge",
             Self::SteamController => "Steam Controller (2026)",
             Self::EightBitDoPro3 => "8BitDo Pro 3",
+            Self::FlydigiApex5 => "Flydigi Apex 5",
+            Self::FlydigiVader5Pro => "Flydigi Vader 5 Pro",
+            Self::GameSirTarantulaPro => "GameSir Tarantula Pro",
         }
     }
 
@@ -239,7 +317,24 @@ impl ControllerKind {
             Self::DualSense | Self::DualSenseEdge => ControllerFamily::DualSense,
             Self::SteamController => ControllerFamily::Steam,
             Self::EightBitDoPro3 => ControllerFamily::EightBitDo,
+            Self::FlydigiApex5 | Self::FlydigiVader5Pro => ControllerFamily::Flydigi,
+            Self::GameSirTarantulaPro => ControllerFamily::GameSir,
         }
+    }
+
+    pub fn profile_group(self) -> ProfileGroup {
+        match self {
+            Self::DualSense | Self::DualSenseEdge => ProfileGroup::DualSense,
+            Self::SteamController => ProfileGroup::Steam,
+            Self::EightBitDoPro3 => ProfileGroup::EightBitDo,
+            Self::FlydigiApex5 => ProfileGroup::FlydigiApex5,
+            Self::FlydigiVader5Pro => ProfileGroup::FlydigiVader5Pro,
+            Self::GameSirTarantulaPro => ProfileGroup::GameSirTarantulaPro,
+        }
+    }
+
+    pub fn same_profile_group(self, other: ControllerKind) -> bool {
+        self.profile_group() == other.profile_group()
     }
 
     pub fn is_steam(self) -> bool {
@@ -250,10 +345,27 @@ impl ControllerKind {
         self.family().is_eightbitdo()
     }
 
+    pub fn is_flydigi(self) -> bool {
+        self.family().is_flydigi()
+    }
+
+    pub fn is_gamesir(self) -> bool {
+        self.family().is_gamesir()
+    }
+
+    pub fn is_vader5(self) -> bool {
+        self == Self::FlydigiVader5Pro
+    }
+
     pub fn target_buttons(self) -> &'static [Button] {
         match self.family() {
             ControllerFamily::Steam => &STEAM_TARGETS,
             ControllerFamily::EightBitDo => &EIGHTBITDO_TARGETS,
+            ControllerFamily::Flydigi => match self {
+                Self::FlydigiVader5Pro => &VADER5_TARGETS,
+                _ => &APEX5_TARGETS,
+            },
+            ControllerFamily::GameSir => &TARANTULA_TARGETS,
             ControllerFamily::DualSense => &GAMEPAD_TARGETS,
         }
     }
@@ -273,7 +385,9 @@ impl ControllerKind {
                 motion: true,
                 touchpad: TouchpadKind::DualCircular,
             },
-            ControllerFamily::EightBitDo => ControllerCapabilities {
+            ControllerFamily::EightBitDo
+            | ControllerFamily::Flydigi
+            | ControllerFamily::GameSir => ControllerCapabilities {
                 kind: self,
                 lightbar: false,
                 player_leds: false,
@@ -379,6 +493,25 @@ pub enum Button {
     EightBitDoR4,
     EightBitDoPL,
     EightBitDoPR,
+    ApexLM,
+    ApexRM,
+    ApexM1,
+    ApexM2,
+    ApexM3,
+    ApexM4,
+    VaderC,
+    VaderZ,
+    VaderCircle,
+    GameSirL4,
+    GameSirR4,
+    GameSirT1,
+    GameSirT2,
+    GameSirT3,
+    GameSirC1,
+    GameSirC2,
+    GameSirC3,
+    GameSirC4,
+    GameSirShare,
 }
 
 pub const GAMEPAD_TARGETS: [Button; 23] = [
@@ -464,7 +597,92 @@ pub const EIGHTBITDO_TARGETS: [Button; 21] = [
     Button::EightBitDoPR,
 ];
 
-pub const ALL_BUTTONS: [Button; 51] = [
+pub const APEX5_TARGETS: [Button; 23] = [
+    Button::Cross,
+    Button::Circle,
+    Button::Square,
+    Button::Triangle,
+    Button::DPadUp,
+    Button::DPadRight,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::L3,
+    Button::R3,
+    Button::Create,
+    Button::Options,
+    Button::PS,
+    Button::ApexLM,
+    Button::ApexRM,
+    Button::ApexM1,
+    Button::ApexM2,
+    Button::ApexM3,
+    Button::ApexM4,
+];
+
+pub const VADER5_TARGETS: [Button; 26] = [
+    Button::Cross,
+    Button::Circle,
+    Button::Square,
+    Button::Triangle,
+    Button::DPadUp,
+    Button::DPadRight,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::L3,
+    Button::R3,
+    Button::Create,
+    Button::Options,
+    Button::PS,
+    Button::ApexLM,
+    Button::ApexRM,
+    Button::ApexM1,
+    Button::ApexM2,
+    Button::ApexM3,
+    Button::ApexM4,
+    Button::VaderC,
+    Button::VaderZ,
+    Button::VaderCircle,
+];
+
+pub const TARANTULA_TARGETS: [Button; 27] = [
+    Button::Cross,
+    Button::Circle,
+    Button::Square,
+    Button::Triangle,
+    Button::DPadUp,
+    Button::DPadRight,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::L3,
+    Button::R3,
+    Button::Create,
+    Button::Options,
+    Button::PS,
+    Button::GameSirL4,
+    Button::GameSirR4,
+    Button::GameSirT1,
+    Button::GameSirT2,
+    Button::GameSirT3,
+    Button::GameSirC1,
+    Button::GameSirC2,
+    Button::GameSirC3,
+    Button::GameSirC4,
+    Button::GameSirShare,
+];
+
+pub const ALL_BUTTONS: [Button; 70] = [
     Button::Cross,
     Button::Circle,
     Button::Square,
@@ -516,6 +734,25 @@ pub const ALL_BUTTONS: [Button; 51] = [
     Button::EightBitDoR4,
     Button::EightBitDoPL,
     Button::EightBitDoPR,
+    Button::ApexLM,
+    Button::ApexRM,
+    Button::ApexM1,
+    Button::ApexM2,
+    Button::ApexM3,
+    Button::ApexM4,
+    Button::VaderC,
+    Button::VaderZ,
+    Button::VaderCircle,
+    Button::GameSirL4,
+    Button::GameSirR4,
+    Button::GameSirT1,
+    Button::GameSirT2,
+    Button::GameSirT3,
+    Button::GameSirC1,
+    Button::GameSirC2,
+    Button::GameSirC3,
+    Button::GameSirC4,
+    Button::GameSirShare,
 ];
 
 impl Button {
@@ -574,6 +811,16 @@ impl Button {
             Button::EdgeFnRight => Some(BTN_EDGE_FN_RIGHT),
             Button::EdgePaddleLeft => Some(BTN_EDGE_PADDLE_LEFT),
             Button::EdgePaddleRight => Some(BTN_EDGE_PADDLE_RIGHT),
+            Button::GameSirL4 => Some(BTN_GAMESIR_L4),
+            Button::GameSirR4 => Some(BTN_GAMESIR_R4),
+            Button::GameSirT1 => Some(BTN_GAMESIR_T1),
+            Button::GameSirT2 => Some(BTN_GAMESIR_T2),
+            Button::GameSirT3 => Some(BTN_GAMESIR_T3),
+            Button::GameSirC1 => Some(BTN_GAMESIR_C1),
+            Button::GameSirC2 => Some(BTN_GAMESIR_C2),
+            Button::GameSirC3 => Some(BTN_GAMESIR_C3),
+            Button::GameSirC4 => Some(BTN_GAMESIR_C4),
+            Button::GameSirShare => Some(BTN_GAMESIR_SHARE),
             Button::DPadUp
             | Button::DPadDown
             | Button::DPadLeft
@@ -605,7 +852,16 @@ impl Button {
             | Button::EightBitDoL4
             | Button::EightBitDoR4
             | Button::EightBitDoPL
-            | Button::EightBitDoPR => None,
+            | Button::EightBitDoPR
+            | Button::ApexLM
+            | Button::ApexRM
+            | Button::ApexM1
+            | Button::ApexM2
+            | Button::ApexM3
+            | Button::ApexM4
+            | Button::VaderC
+            | Button::VaderZ
+            | Button::VaderCircle => None,
         }
     }
 
@@ -631,6 +887,15 @@ impl Button {
             Button::EightBitDoR4 => Some(EXTRA_BTN_EIGHTBITDO_R4),
             Button::EightBitDoPL => Some(EXTRA_BTN_EIGHTBITDO_PL),
             Button::EightBitDoPR => Some(EXTRA_BTN_EIGHTBITDO_PR),
+            Button::ApexLM => Some(APEX_LM),
+            Button::ApexRM => Some(APEX_RM),
+            Button::ApexM1 => Some(APEX_M1),
+            Button::ApexM2 => Some(APEX_M2),
+            Button::ApexM3 => Some(APEX_M3),
+            Button::ApexM4 => Some(APEX_M4),
+            Button::VaderC => Some(VADER_C),
+            Button::VaderZ => Some(VADER_Z),
+            Button::VaderCircle => Some(VADER_CIRCLE),
             _ => None,
         }
     }
@@ -720,6 +985,25 @@ impl Button {
             Button::EightBitDoR4 => "R4",
             Button::EightBitDoPL => "PL",
             Button::EightBitDoPR => "PR",
+            Button::ApexLM => "LM",
+            Button::ApexRM => "RM",
+            Button::ApexM1 => "M1",
+            Button::ApexM2 => "M2",
+            Button::ApexM3 => "M3",
+            Button::ApexM4 => "M4",
+            Button::VaderC => "C",
+            Button::VaderZ => "Z",
+            Button::VaderCircle => "Circle",
+            Button::GameSirL4 => "L4",
+            Button::GameSirR4 => "R4",
+            Button::GameSirT1 => "T1",
+            Button::GameSirT2 => "T2",
+            Button::GameSirT3 => "T3",
+            Button::GameSirC1 => "C1",
+            Button::GameSirC2 => "C2",
+            Button::GameSirC3 => "C3",
+            Button::GameSirC4 => "C4",
+            Button::GameSirShare => "Share",
         }
     }
 
@@ -754,11 +1038,45 @@ impl Button {
                     AbxyLayout::Xbox => "B",
                     AbxyLayout::Switch => "A",
                 },
-                Button::Square => "X",
-                Button::Triangle => "Y",
+                Button::Square => match layout {
+                    AbxyLayout::Xbox => "X",
+                    AbxyLayout::Switch => "Y",
+                },
+                Button::Triangle => match layout {
+                    AbxyLayout::Xbox => "Y",
+                    AbxyLayout::Switch => "X",
+                },
                 Button::Create => "Select",
                 Button::Options => "Start",
                 Button::PS => "Home",
+                _ => self.label(),
+            },
+            ControllerFamily::Flydigi => match self {
+                Button::Cross => "A",
+                Button::Circle => "B",
+                Button::Square => "X",
+                Button::Triangle => "Y",
+                Button::Create => "View",
+                Button::Options => "Menu",
+                Button::PS => "Guide",
+                Button::L1 => "LB",
+                Button::R1 => "RB",
+                Button::L2 => "LT",
+                Button::R2 => "RT",
+                _ => self.label(),
+            },
+            ControllerFamily::GameSir => match self {
+                Button::Cross => "A",
+                Button::Circle => "B",
+                Button::Square => "X",
+                Button::Triangle => "Y",
+                Button::Create => "View",
+                Button::Options => "Menu",
+                Button::PS => "Home",
+                Button::L1 => "LB",
+                Button::R1 => "RB",
+                Button::L2 => "LT",
+                Button::R2 => "RT",
                 _ => self.label(),
             },
         }
@@ -816,6 +1134,325 @@ mod tests {
     }
 
     #[test]
+    fn apex5_capabilities_are_rumble_and_motion_only() {
+        let pad = ControllerKind::FlydigiApex5.capabilities();
+        assert!(!pad.lightbar);
+        assert!(!pad.player_leds);
+        assert!(!pad.microphone);
+        assert!(!pad.adaptive_triggers);
+        assert!(!pad.haptics);
+        assert!(!pad.trackpad_haptics);
+        assert!(pad.rumble);
+        assert!(!pad.firmware);
+        assert!(pad.motion);
+        assert_eq!(pad.touchpad, TouchpadKind::None);
+        assert_eq!(
+            ControllerKind::FlydigiApex5.family(),
+            ControllerFamily::Flydigi
+        );
+        assert!(ControllerKind::FlydigiApex5.is_flydigi());
+        assert_eq!(ControllerKind::FlydigiApex5.label(), "Flydigi Apex 5");
+        assert!(!ControllerKind::FlydigiApex5.is_vader5());
+    }
+
+    #[test]
+    fn vader5_capabilities_match_apex5_and_use_its_family() {
+        let pad = ControllerKind::FlydigiVader5Pro.capabilities();
+        assert!(!pad.lightbar);
+        assert!(!pad.player_leds);
+        assert!(!pad.microphone);
+        assert!(!pad.adaptive_triggers);
+        assert!(!pad.haptics);
+        assert!(!pad.trackpad_haptics);
+        assert!(pad.rumble);
+        assert!(!pad.firmware);
+        assert!(pad.motion);
+        assert_eq!(pad.touchpad, TouchpadKind::None);
+        assert_eq!(
+            ControllerKind::FlydigiVader5Pro.family(),
+            ControllerFamily::Flydigi
+        );
+        assert!(ControllerKind::FlydigiVader5Pro.is_flydigi());
+        assert_eq!(
+            ControllerKind::FlydigiVader5Pro.label(),
+            "Flydigi Vader 5 Pro"
+        );
+        assert!(ControllerKind::FlydigiVader5Pro.is_vader5());
+    }
+
+    #[test]
+    fn gamesir_capabilities_are_rumble_and_motion_only() {
+        let pad = ControllerKind::GameSirTarantulaPro.capabilities();
+        assert!(!pad.lightbar);
+        assert!(!pad.player_leds);
+        assert!(!pad.microphone);
+        assert!(!pad.adaptive_triggers);
+        assert!(!pad.haptics);
+        assert!(!pad.trackpad_haptics);
+        assert!(pad.rumble);
+        assert!(!pad.firmware);
+        assert!(pad.motion);
+        assert_eq!(pad.touchpad, TouchpadKind::None);
+        assert_eq!(
+            ControllerKind::GameSirTarantulaPro.family(),
+            ControllerFamily::GameSir
+        );
+        assert!(ControllerKind::GameSirTarantulaPro.is_gamesir());
+        assert_eq!(
+            ControllerKind::GameSirTarantulaPro.label(),
+            "GameSir Tarantula Pro"
+        );
+        assert_eq!(ControllerFamily::GameSir.label(), "GameSir");
+    }
+
+    #[test]
+    fn profile_groups_map_kinds_and_share_dualsense_edge() {
+        assert_eq!(
+            ControllerKind::DualSense.profile_group(),
+            ProfileGroup::DualSense
+        );
+        assert_eq!(
+            ControllerKind::DualSenseEdge.profile_group(),
+            ProfileGroup::DualSense
+        );
+        assert_eq!(
+            ControllerKind::SteamController.profile_group(),
+            ProfileGroup::Steam
+        );
+        assert_eq!(
+            ControllerKind::EightBitDoPro3.profile_group(),
+            ProfileGroup::EightBitDo
+        );
+        assert_eq!(
+            ControllerKind::FlydigiApex5.profile_group(),
+            ProfileGroup::FlydigiApex5
+        );
+        assert_eq!(
+            ControllerKind::FlydigiVader5Pro.profile_group(),
+            ProfileGroup::FlydigiVader5Pro
+        );
+        assert_eq!(
+            ControllerKind::GameSirTarantulaPro.profile_group(),
+            ProfileGroup::GameSirTarantulaPro
+        );
+
+        assert!(ControllerKind::DualSense.same_profile_group(ControllerKind::DualSenseEdge));
+        assert!(!ControllerKind::FlydigiApex5.same_profile_group(ControllerKind::FlydigiVader5Pro));
+        assert!(!ControllerKind::SteamController.same_profile_group(ControllerKind::DualSense));
+    }
+
+    #[test]
+    fn profile_group_list_is_unique_and_labelled() {
+        let groups = ProfileGroup::all();
+        assert_eq!(groups.len(), 6);
+        let unique: HashSet<_> = groups.into_iter().collect();
+        assert_eq!(unique.len(), PROFILE_GROUPS.len());
+        for group in groups {
+            assert!(!group.label().is_empty());
+        }
+        assert_eq!(ProfileGroup::DualSense.label(), "DualSense / Edge");
+        assert_eq!(
+            ProfileGroup::FlydigiVader5Pro.label(),
+            "Flydigi Vader 5 Pro"
+        );
+    }
+
+    #[test]
+    fn gamesir_targets_cover_standard_and_ten_extras() {
+        let targets = ControllerKind::GameSirTarantulaPro.target_buttons();
+        assert_eq!(targets.len(), 27);
+        for button in [
+            Button::Cross,
+            Button::Circle,
+            Button::Square,
+            Button::Triangle,
+            Button::L1,
+            Button::R1,
+            Button::L2,
+            Button::R2,
+            Button::L3,
+            Button::R3,
+            Button::Create,
+            Button::Options,
+            Button::PS,
+            Button::GameSirL4,
+            Button::GameSirR4,
+            Button::GameSirT1,
+            Button::GameSirT2,
+            Button::GameSirT3,
+            Button::GameSirC1,
+            Button::GameSirC2,
+            Button::GameSirC3,
+            Button::GameSirC4,
+            Button::GameSirShare,
+        ] {
+            assert!(targets.contains(&button), "{button:?}");
+        }
+        for button in [
+            Button::Mute,
+            Button::Touchpad,
+            Button::EdgeFnLeft,
+            Button::Steam,
+            Button::LeftPad,
+            Button::L4,
+            Button::EightBitDoL4,
+            Button::ApexM1,
+            Button::VaderC,
+        ] {
+            assert!(!targets.contains(&button));
+        }
+    }
+
+    #[test]
+    fn gamesir_labels_use_xbox_caps_and_keep_extras() {
+        let kind = ControllerKind::GameSirTarantulaPro;
+        for layout in [AbxyLayout::Xbox, AbxyLayout::Switch] {
+            assert_eq!(Button::Cross.device_label_with_layout(kind, layout), "A");
+            assert_eq!(Button::Circle.device_label_with_layout(kind, layout), "B");
+            assert_eq!(Button::Square.device_label_with_layout(kind, layout), "X");
+            assert_eq!(Button::Triangle.device_label_with_layout(kind, layout), "Y");
+            assert_eq!(
+                Button::Create.device_label_with_layout(kind, layout),
+                "View"
+            );
+            assert_eq!(
+                Button::Options.device_label_with_layout(kind, layout),
+                "Menu"
+            );
+            assert_eq!(Button::PS.device_label_with_layout(kind, layout), "Home");
+            assert_eq!(Button::L1.device_label_with_layout(kind, layout), "LB");
+            assert_eq!(Button::R1.device_label_with_layout(kind, layout), "RB");
+            assert_eq!(Button::L2.device_label_with_layout(kind, layout), "LT");
+            assert_eq!(Button::R2.device_label_with_layout(kind, layout), "RT");
+            assert_eq!(Button::GameSirL4.label(), "L4");
+            assert_eq!(Button::GameSirR4.label(), "R4");
+            assert_eq!(Button::GameSirT1.label(), "T1");
+            assert_eq!(Button::GameSirT3.label(), "T3");
+            assert_eq!(Button::GameSirC1.label(), "C1");
+            assert_eq!(Button::GameSirC4.label(), "C4");
+            assert_eq!(Button::GameSirShare.label(), "Share");
+        }
+    }
+
+    #[test]
+    fn gamesir_extra_bits_round_trip_and_report_presses() {
+        for (button, mask) in [
+            (Button::GameSirL4, BTN_GAMESIR_L4),
+            (Button::GameSirR4, BTN_GAMESIR_R4),
+            (Button::GameSirT1, BTN_GAMESIR_T1),
+            (Button::GameSirT2, BTN_GAMESIR_T2),
+            (Button::GameSirT3, BTN_GAMESIR_T3),
+            (Button::GameSirC1, BTN_GAMESIR_C1),
+            (Button::GameSirC2, BTN_GAMESIR_C2),
+            (Button::GameSirC3, BTN_GAMESIR_C3),
+            (Button::GameSirC4, BTN_GAMESIR_C4),
+            (Button::GameSirShare, BTN_GAMESIR_SHARE),
+        ] {
+            assert_eq!(button.to_bitmask(), Some(mask));
+            assert_eq!(button.to_extra_mask(), None);
+            let mut state = ControllerState::default();
+            assert!(!button.is_pressed(&state), "{button:?} unpressed");
+            state.buttons = mask;
+            assert!(button.is_pressed(&state), "{button:?} pressed");
+            assert_eq!(state.extra_buttons, 0);
+        }
+    }
+
+    #[test]
+    fn apex5_targets_cover_standard_and_extra_buttons() {
+        let targets = ControllerKind::FlydigiApex5.target_buttons();
+        assert_eq!(targets.len(), 23);
+        for button in [
+            Button::ApexLM,
+            Button::ApexRM,
+            Button::ApexM1,
+            Button::ApexM2,
+            Button::ApexM3,
+            Button::ApexM4,
+            Button::PS,
+        ] {
+            assert!(targets.contains(&button));
+        }
+        for button in [
+            Button::Mute,
+            Button::Touchpad,
+            Button::EdgeFnLeft,
+            Button::Steam,
+            Button::LeftPad,
+            Button::L4,
+            Button::EightBitDoL4,
+            Button::VaderC,
+            Button::VaderZ,
+            Button::VaderCircle,
+        ] {
+            assert!(!targets.contains(&button));
+        }
+    }
+
+    #[test]
+    fn vader5_targets_add_c_z_and_circle() {
+        let targets = ControllerKind::FlydigiVader5Pro.target_buttons();
+        assert_eq!(targets.len(), 26);
+        for button in [
+            Button::ApexLM,
+            Button::ApexRM,
+            Button::ApexM1,
+            Button::ApexM2,
+            Button::ApexM3,
+            Button::ApexM4,
+            Button::VaderC,
+            Button::VaderZ,
+            Button::VaderCircle,
+            Button::PS,
+        ] {
+            assert!(targets.contains(&button));
+        }
+        for button in [
+            Button::Mute,
+            Button::Touchpad,
+            Button::EdgeFnLeft,
+            Button::Steam,
+            Button::LeftPad,
+            Button::L4,
+            Button::EightBitDoL4,
+        ] {
+            assert!(!targets.contains(&button));
+        }
+    }
+
+    #[test]
+    fn apex5_labels_use_xbox_caps_and_keep_extras() {
+        let kind = ControllerKind::FlydigiApex5;
+        for layout in [AbxyLayout::Xbox, AbxyLayout::Switch] {
+            assert_eq!(Button::Cross.device_label_with_layout(kind, layout), "A");
+            assert_eq!(Button::Circle.device_label_with_layout(kind, layout), "B");
+            assert_eq!(Button::Square.device_label_with_layout(kind, layout), "X");
+            assert_eq!(Button::Triangle.device_label_with_layout(kind, layout), "Y");
+            assert_eq!(
+                Button::Create.device_label_with_layout(kind, layout),
+                "View"
+            );
+            assert_eq!(
+                Button::Options.device_label_with_layout(kind, layout),
+                "Menu"
+            );
+            assert_eq!(Button::PS.device_label_with_layout(kind, layout), "Guide");
+            assert_eq!(Button::L1.device_label_with_layout(kind, layout), "LB");
+            assert_eq!(Button::R1.device_label_with_layout(kind, layout), "RB");
+            assert_eq!(Button::L2.device_label_with_layout(kind, layout), "LT");
+            assert_eq!(Button::R2.device_label_with_layout(kind, layout), "RT");
+            assert_eq!(Button::ApexLM.device_label_with_layout(kind, layout), "LM");
+            assert_eq!(Button::ApexM4.device_label_with_layout(kind, layout), "M4");
+            assert_eq!(Button::VaderC.device_label_with_layout(kind, layout), "C");
+            assert_eq!(Button::VaderZ.device_label_with_layout(kind, layout), "Z");
+            assert_eq!(
+                Button::VaderCircle.device_label_with_layout(kind, layout),
+                "Circle"
+            );
+        }
+    }
+
+    #[test]
     fn eightbitdo_targets_exclude_sony_and_steam_controls() {
         let targets = ControllerKind::EightBitDoPro3.target_buttons();
         for button in [
@@ -866,27 +1503,78 @@ mod tests {
                 assert!(button.to_bitmask().is_none());
             }
         }
-        assert_eq!(masks.len(), 20);
+        assert_eq!(masks.len(), 29);
+    }
+
+    #[test]
+    fn all_buttons_includes_flydigi_extras() {
+        assert_eq!(ALL_BUTTONS.len(), 70);
+        for button in [
+            Button::ApexLM,
+            Button::ApexRM,
+            Button::ApexM1,
+            Button::ApexM2,
+            Button::ApexM3,
+            Button::ApexM4,
+            Button::VaderC,
+            Button::VaderZ,
+            Button::VaderCircle,
+            Button::GameSirL4,
+            Button::GameSirShare,
+        ] {
+            assert!(ALL_BUTTONS.contains(&button));
+        }
+    }
+
+    #[test]
+    fn flydigi_extra_masks_round_trip_and_report_presses() {
+        for (button, mask) in [
+            (Button::ApexLM, APEX_LM),
+            (Button::ApexRM, APEX_RM),
+            (Button::ApexM1, APEX_M1),
+            (Button::ApexM2, APEX_M2),
+            (Button::ApexM3, APEX_M3),
+            (Button::ApexM4, APEX_M4),
+            (Button::VaderC, VADER_C),
+            (Button::VaderZ, VADER_Z),
+            (Button::VaderCircle, VADER_CIRCLE),
+        ] {
+            assert_eq!(button.to_extra_mask(), Some(mask));
+            assert_eq!(button.to_bitmask(), None);
+            let mut state = ControllerState::default();
+            assert!(!button.is_pressed(&state), "{button:?} unpressed");
+            state.extra_buttons = mask;
+            assert!(button.is_pressed(&state), "{button:?} pressed");
+        }
     }
 
     #[test]
     fn eightbitdo_face_labels_follow_abxy_layout() {
         let kind = ControllerKind::EightBitDoPro3;
-        for (layout, cross, circle) in
-            [(AbxyLayout::Xbox, "A", "B"), (AbxyLayout::Switch, "B", "A")]
-        {
+        for (layout, triangle, square, circle, cross) in [
+            (AbxyLayout::Xbox, "Y", "X", "B", "A"),
+            (AbxyLayout::Switch, "X", "Y", "A", "B"),
+        ] {
             assert_eq!(
-                Button::Cross.device_label_with_layout(kind, layout),
-                cross,
-                "Cross in {layout:?}"
+                Button::Triangle.device_label_with_layout(kind, layout),
+                triangle,
+                "Triangle in {layout:?}"
+            );
+            assert_eq!(
+                Button::Square.device_label_with_layout(kind, layout),
+                square,
+                "Square in {layout:?}"
             );
             assert_eq!(
                 Button::Circle.device_label_with_layout(kind, layout),
                 circle,
                 "Circle in {layout:?}"
             );
-            assert_eq!(Button::Square.device_label_with_layout(kind, layout), "X");
-            assert_eq!(Button::Triangle.device_label_with_layout(kind, layout), "Y");
+            assert_eq!(
+                Button::Cross.device_label_with_layout(kind, layout),
+                cross,
+                "Cross in {layout:?}"
+            );
         }
     }
 

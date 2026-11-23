@@ -4,6 +4,7 @@ use crate::app::DS4UApp;
 
 use self::ipc::IpcClient;
 
+mod apex5;
 mod app;
 mod backend;
 mod common;
@@ -13,6 +14,7 @@ mod dualsense;
 mod eightbitdo;
 mod firmware;
 mod firmware_controller;
+mod gamesir;
 mod gyro;
 mod haptics_stream;
 mod input_grab;
