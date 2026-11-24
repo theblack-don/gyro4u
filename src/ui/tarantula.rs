@@ -20,9 +20,11 @@ pub(crate) fn paint(
     hovered: Option<Button>,
     c: &ThemeColors,
 ) {
-    Image::new(include_image!("../../assets/tarantula_pro.svg"))
-        .maintain_aspect_ratio(true)
-        .paint_at(ui, layout.art_rect());
+    Image::new(include_image!(
+        "../../assets/GAMESIR_Controller_White_Line_Art.svg"
+    ))
+    .maintain_aspect_ratio(true)
+    .paint_at(ui, layout.art_rect());
 
     let has_live_state = state.is_some();
     let state = state.copied().unwrap_or_default();
@@ -265,7 +267,7 @@ fn paint_overlays(
 mod tests {
     #[test]
     fn svg_asset_parses_with_the_svg_renderer() {
-        let bytes = include_bytes!("../../assets/tarantula_pro.svg");
+        let bytes = include_bytes!("../../assets/GAMESIR_Controller_White_Line_Art.svg");
         let image = egui_extras::image::load_svg_bytes(bytes, &Default::default())
             .expect("GameSir Tarantula Pro SVG should parse");
         assert!(image.size[0] > 0 && image.size[1] > 0);

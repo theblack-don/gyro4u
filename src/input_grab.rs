@@ -72,16 +72,6 @@ impl InputGrab {
                 continue;
             }
 
-            // Only the gamepad node; motion sensors, the touchpad and the
-            // headset jack keep their normal userspace access.
-            if dev
-                .property_value("ID_INPUT_JOYSTICK")
-                .and_then(|v| v.to_str())
-                != Some("1")
-            {
-                continue;
-            }
-
             let vendor = dev
                 .property_value("ID_VENDOR_ID")
                 .and_then(|v| v.to_str())
@@ -90,6 +80,22 @@ impl InputGrab {
                 .property_value("ID_MODEL_ID")
                 .and_then(|v| v.to_str())
                 .and_then(|v| u16::from_str_radix(v.trim(), 16).ok());
+
+            let is_gamesir = vendor == Some(GAMESIR_VID) && product == Some(TARANTULA_PRO_PID);
+
+            // Only the gamepad node for other controllers; motion sensors, the
+            // touchpad and the headset jack keep their normal userspace access.
+            // GameSir's dongle also exposes keyboard, mouse and auxiliary event
+            // nodes, so grab all of them and stop its onboard mappings
+            // (Esc/Shift/middle click) from leaking to the OS.
+            if !is_gamesir
+                && dev
+                    .property_value("ID_INPUT_JOYSTICK")
+                    .and_then(|v| v.to_str())
+                    != Some("1")
+            {
+                continue;
+            }
 
             let is_dualsense =
                 vendor == Some(DS_VID) && matches!(product, Some(DS_PID) | Some(DSE_PID));
@@ -104,7 +110,6 @@ impl InputGrab {
             let is_eightbitdo =
                 vendor == Some(EIGHTBITDO_VID) && matches!(product, Some(EIGHTBITDO_PRO3_PID));
             let is_flydigi = vendor == Some(FLYDIGI_VID) && product.is_some_and(is_supported_pid);
-            let is_gamesir = vendor == Some(GAMESIR_VID) && product == Some(TARANTULA_PRO_PID);
             if !is_dualsense && !is_steam && !is_eightbitdo && !is_flydigi && !is_gamesir {
                 continue;
             }

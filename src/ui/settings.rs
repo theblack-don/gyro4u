@@ -1,7 +1,101 @@
-use egui::{Color32, RichText, Sense, Stroke, StrokeKind, Ui, vec2};
+use egui::{
+    Align, Color32, Direction, Frame, Image, Label, Layout, Margin, RichText, Sense, Stroke,
+    StrokeKind, Ui, UiBuilder, Vec2, include_image, vec2,
+};
 
 use crate::app::DS4UApp;
 use crate::ui::widgets::{ROW_PAD_X, ds_label, ds_pill_button, ds_row, ds_section, ds_toggle};
+
+const GALLERY_CARD_SIZE: Vec2 = vec2(224.0, 184.0);
+const GALLERY_GAP: f32 = 12.0;
+const GALLERY_PAD: Vec2 = vec2(14.0, 10.0);
+const GALLERY_HEADER_H: f32 = 36.0;
+const GALLERY_HEADER_GAP: f32 = 6.0;
+const GALLERY_RADIUS: f32 = 4.0;
+
+fn gallery_cards() -> [(&'static str, egui::ImageSource<'static>); 6] {
+    [
+        (
+            "DualSense / DualSense Edge",
+            include_image!("../../assets/controller.svg"),
+        ),
+        (
+            "Steam Controller (2026)",
+            include_image!("../../assets/steam_controller.svg"),
+        ),
+        (
+            "8BitDo Pro 3",
+            include_image!("../../assets/eightbitdo_pro3.svg"),
+        ),
+        ("Flydigi Apex 5", include_image!("../../assets/apex5.svg")),
+        (
+            "Flydigi Vader 5 Pro",
+            include_image!("../../assets/vader5_pro.svg"),
+        ),
+        (
+            "GameSir Tarantula Pro",
+            include_image!("../../assets/GAMESIR_Controller_White_Line_Art.svg"),
+        ),
+    ]
+}
+
+fn render_supported_controllers(ui: &mut Ui, c: &crate::theme::ThemeColors) {
+    Frame::NONE
+        .inner_margin(Margin::symmetric(ROW_PAD_X as i8, 0))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(GALLERY_GAP, GALLERY_GAP);
+                for (name, image) in gallery_cards() {
+                    let (card, _) = ui.allocate_exact_size(GALLERY_CARD_SIZE, Sense::hover());
+                    let painter = ui.painter();
+                    painter.rect_filled(card, GALLERY_RADIUS, c.panel_bg());
+                    painter.rect_stroke(
+                        card,
+                        GALLERY_RADIUS,
+                        Stroke::new(1.0, crate::ui::widgets::sep_color(c)),
+                        StrokeKind::Inside,
+                    );
+
+                    let inner = card.shrink2(GALLERY_PAD);
+                    let art = vec2(
+                        inner.width(),
+                        inner.height() - GALLERY_HEADER_H - GALLERY_HEADER_GAP,
+                    );
+                    let mut card_ui = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(inner)
+                            .layout(Layout::top_down(Align::Center)),
+                    );
+                    card_ui.spacing_mut().item_spacing.y = 0.0;
+                    card_ui.allocate_ui_with_layout(
+                        vec2(inner.width(), GALLERY_HEADER_H),
+                        Layout::top_down(Align::Center),
+                        |ui| {
+                            ui.add(
+                                Label::new(RichText::new(name).size(14.0).strong().color(c.text()))
+                                    .wrap()
+                                    .halign(Align::Center)
+                                    .selectable(false),
+                            );
+                        },
+                    );
+                    card_ui.add_space(GALLERY_HEADER_GAP);
+                    card_ui.allocate_ui_with_layout(
+                        art,
+                        Layout::centered_and_justified(Direction::TopDown),
+                        |ui| {
+                            ui.add(
+                                Image::new(image)
+                                    .max_size(art)
+                                    .maintain_aspect_ratio(true)
+                                    .tint(c.text()),
+                            );
+                        },
+                    );
+                }
+            });
+        });
+}
 
 impl DS4UApp {
     pub(crate) fn render_settings_section(&mut self, ui: &mut Ui) {
@@ -9,6 +103,10 @@ impl DS4UApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ds_section(ui, &c, "Supported controllers");
+                render_supported_controllers(ui, &c);
+                ui.add_space(4.0);
+
                 ds_section(ui, &c, "Theme");
                 ds_row(ui, |ui| {
                     ds_label(ui, "Active");
@@ -148,5 +246,25 @@ impl DS4UApp {
                     }
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gallery_cards;
+
+    #[test]
+    fn gallery_svgs_parse_with_the_svg_renderer() {
+        for (name, source) in gallery_cards() {
+            let egui::ImageSource::Bytes { bytes, .. } = source else {
+                panic!("{name}: expected embedded bytes");
+            };
+            let egui::load::Bytes::Static(bytes) = bytes else {
+                panic!("{name}: expected static bytes");
+            };
+            let image = egui_extras::image::load_svg_bytes(bytes, &Default::default())
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert!(image.size[0] > 0 && image.size[1] > 0, "{name}");
+        }
     }
 }

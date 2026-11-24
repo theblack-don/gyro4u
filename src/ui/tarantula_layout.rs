@@ -1,12 +1,13 @@
 //! Shared GameSir Tarantula Pro geometry and hit testing for the live and
-//! mapping views. Coordinates mirror `assets/tarantula_pro.svg` (160 x 112).
+//! mapping views. Coordinates mirror `assets/GAMESIR_Controller_White_Line_Art.svg`
+//! (1448 x 1086).
 
 use egui::{Pos2, Rect, vec2};
 
 use crate::inputs::Button;
 
-pub const VIEWBOX_W: f32 = 160.0;
-pub const VIEWBOX_H: f32 = 112.0;
+pub const VIEWBOX_W: f32 = 1448.0;
+pub const VIEWBOX_H: f32 = 1086.0;
 
 /// Small system buttons stay selectable when the diagram is narrow.
 pub const MIN_HIT_RADIUS_PX: f32 = 9.0;
@@ -49,48 +50,48 @@ impl TarantulaRect {
     }
 }
 
-pub const LEFT_TRIGGER_BAR: TarantulaRect = TarantulaRect::new(26.0, 1.0, 27.0, 7.0);
-pub const RIGHT_TRIGGER_BAR: TarantulaRect = TarantulaRect::new(107.0, 1.0, 27.0, 7.0);
-pub const LEFT_BUMPER: TarantulaRect = TarantulaRect::new(26.0, 9.0, 27.0, 11.0);
-pub const RIGHT_BUMPER: TarantulaRect = TarantulaRect::new(107.0, 9.0, 27.0, 11.0);
+pub const LEFT_TRIGGER_BAR: TarantulaRect = TarantulaRect::new(225.0, 95.0, 105.0, 43.0);
+pub const RIGHT_TRIGGER_BAR: TarantulaRect = TarantulaRect::new(1116.0, 95.0, 105.0, 43.0);
+pub const LEFT_BUMPER: TarantulaRect = TarantulaRect::new(180.0, 148.0, 295.0, 44.0);
+pub const RIGHT_BUMPER: TarantulaRect = TarantulaRect::new(971.0, 148.0, 295.0, 44.0);
 
-pub const DPAD_UP: (f32, f32) = (45.0, 32.0);
-pub const DPAD_RIGHT: (f32, f32) = (55.0, 42.0);
-pub const DPAD_DOWN: (f32, f32) = (45.0, 52.0);
-pub const DPAD_LEFT: (f32, f32) = (35.0, 42.0);
-pub const DPAD_RADIUS: f32 = 4.2;
-pub const DPAD_HIT_RADIUS: f32 = 4.2;
+pub const DPAD_UP: (f32, f32) = (300.0, 270.0);
+pub const DPAD_RIGHT: (f32, f32) = (382.0, 355.0);
+pub const DPAD_DOWN: (f32, f32) = (300.0, 438.0);
+pub const DPAD_LEFT: (f32, f32) = (221.0, 355.0);
+pub const DPAD_RADIUS: f32 = 38.0;
+pub const DPAD_HIT_RADIUS: f32 = 38.0;
 
-pub const LEFT_STICK: (f32, f32) = (44.0, 78.0);
-pub const RIGHT_STICK: (f32, f32) = (116.0, 78.0);
-pub const STICK_RADIUS: f32 = 10.8;
-pub const STICK_HIT_RADIUS: f32 = 10.8;
+pub const LEFT_STICK: (f32, f32) = (512.0, 538.0);
+pub const RIGHT_STICK: (f32, f32) = (933.0, 538.0);
+pub const STICK_RADIUS: f32 = 105.0;
+pub const STICK_HIT_RADIUS: f32 = 105.0;
 
-pub const FACE_RADIUS: f32 = 4.6;
-pub const FACE_HIT_RADIUS: f32 = 4.4;
-pub const FACE_Y: (f32, f32) = (117.0, 31.0);
-pub const FACE_X: (f32, f32) = (106.0, 42.0);
-pub const FACE_B: (f32, f32) = (128.0, 42.0);
-pub const FACE_A: (f32, f32) = (117.0, 53.0);
+pub const FACE_RADIUS: f32 = 45.0;
+pub const FACE_HIT_RADIUS: f32 = 42.0;
+pub const FACE_Y: (f32, f32) = (1142.0, 273.0);
+pub const FACE_X: (f32, f32) = (1053.0, 357.0);
+pub const FACE_B: (f32, f32) = (1229.0, 357.0);
+pub const FACE_A: (f32, f32) = (1143.0, 445.0);
 
-pub const T_BUTTON_RADIUS: f32 = 3.0;
-pub const T1_CENTER: (f32, f32) = (70.0, 25.0);
-pub const T2_CENTER: (f32, f32) = (80.0, 21.0);
-pub const T3_CENTER: (f32, f32) = (90.0, 25.0);
+pub const T_BUTTON_RADIUS: f32 = 22.0;
+pub const T1_CENTER: (f32, f32) = (650.0, 120.0);
+pub const T2_CENTER: (f32, f32) = (723.0, 120.0);
+pub const T3_CENTER: (f32, f32) = (796.0, 120.0);
 
-pub const C1_CHIP: TarantulaRect = TarantulaRect::new(63.0, 38.0, 8.0, 6.0);
-pub const C2_CHIP: TarantulaRect = TarantulaRect::new(72.0, 38.0, 8.0, 6.0);
-pub const C3_CHIP: TarantulaRect = TarantulaRect::new(82.0, 38.0, 8.0, 6.0);
-pub const C4_CHIP: TarantulaRect = TarantulaRect::new(91.0, 38.0, 8.0, 6.0);
+pub const C1_CHIP: TarantulaRect = TarantulaRect::new(427.0, 198.0, 75.0, 63.0);
+pub const C2_CHIP: TarantulaRect = TarantulaRect::new(510.0, 257.0, 74.0, 64.0);
+pub const C3_CHIP: TarantulaRect = TarantulaRect::new(864.0, 257.0, 73.0, 64.0);
+pub const C4_CHIP: TarantulaRect = TarantulaRect::new(946.0, 197.0, 73.0, 64.0);
 
-pub const HOME_CENTER: (f32, f32) = (80.0, 51.0);
-pub const HOME_RADIUS: f32 = 4.2;
-pub const VIEW_PILL: TarantulaRect = TarantulaRect::new(57.0, 56.0, 11.0, 6.0);
-pub const MENU_PILL: TarantulaRect = TarantulaRect::new(92.0, 56.0, 11.0, 6.0);
-pub const SHARE_PILL: TarantulaRect = TarantulaRect::new(74.0, 58.0, 12.0, 6.0);
+pub const HOME_CENTER: (f32, f32) = (723.0, 514.0);
+pub const HOME_RADIUS: f32 = 55.0;
+pub const VIEW_PILL: TarantulaRect = TarantulaRect::new(622.0, 311.0, 46.0, 45.0);
+pub const MENU_PILL: TarantulaRect = TarantulaRect::new(778.0, 311.0, 46.0, 45.0);
+pub const SHARE_PILL: TarantulaRect = TarantulaRect::new(700.0, 311.0, 46.0, 45.0);
 
-pub const LEFT_REAR_CHIP: TarantulaRect = TarantulaRect::new(16.0, 90.0, 14.0, 10.0);
-pub const RIGHT_REAR_CHIP: TarantulaRect = TarantulaRect::new(130.0, 90.0, 14.0, 10.0);
+pub const LEFT_REAR_CHIP: TarantulaRect = TarantulaRect::new(560.0, 930.0, 120.0, 60.0);
+pub const RIGHT_REAR_CHIP: TarantulaRect = TarantulaRect::new(766.0, 930.0, 120.0, 60.0);
 
 #[derive(Clone, Copy, Debug)]
 pub enum TarantulaShape {
@@ -258,56 +259,16 @@ impl TarantulaLayout {
 mod tests {
     use super::*;
     use crate::inputs::ControllerKind;
-    use crate::ui::model_art_tests::{
-        assert_circle, assert_no_text, assert_path_bounds, assert_rect, assert_viewbox,
-    };
+    use crate::ui::model_art_tests::{assert_no_text, assert_viewbox};
     use egui::pos2;
     use std::collections::HashSet;
 
-    const SVG: &str = include_str!("../../assets/tarantula_pro.svg");
+    const SVG: &str = include_str!("../../assets/GAMESIR_Controller_White_Line_Art.svg");
 
     #[test]
-    fn svg_art_matches_layout_constants() {
+    fn svg_asset_matches_layout_viewbox() {
         assert_viewbox(SVG, VIEWBOX_W, VIEWBOX_H);
         assert_no_text(SVG);
-
-        for (id, rect) in [
-            ("tarantula-l2", LEFT_TRIGGER_BAR),
-            ("tarantula-r2", RIGHT_TRIGGER_BAR),
-            ("tarantula-c1", C1_CHIP),
-            ("tarantula-c2", C2_CHIP),
-            ("tarantula-c3", C3_CHIP),
-            ("tarantula-c4", C4_CHIP),
-            ("tarantula-view", VIEW_PILL),
-            ("tarantula-menu", MENU_PILL),
-            ("tarantula-share", SHARE_PILL),
-            ("tarantula-l4", LEFT_REAR_CHIP),
-            ("tarantula-r4", RIGHT_REAR_CHIP),
-        ] {
-            assert_rect(SVG, id, rect.x, rect.y, rect.w, rect.h);
-        }
-
-        for (id, rect) in [
-            ("tarantula-l1", LEFT_BUMPER),
-            ("tarantula-r1", RIGHT_BUMPER),
-        ] {
-            assert_path_bounds(SVG, id, rect.x, rect.y, rect.w, rect.h);
-        }
-
-        for (id, (cx, cy), radius) in [
-            ("tarantula-stick-l", LEFT_STICK, STICK_RADIUS),
-            ("tarantula-stick-r", RIGHT_STICK, STICK_RADIUS),
-            ("tarantula-face-y", FACE_Y, FACE_RADIUS),
-            ("tarantula-face-x", FACE_X, FACE_RADIUS),
-            ("tarantula-face-b", FACE_B, FACE_RADIUS),
-            ("tarantula-face-a", FACE_A, FACE_RADIUS),
-            ("tarantula-t1", T1_CENTER, T_BUTTON_RADIUS),
-            ("tarantula-t2", T2_CENTER, T_BUTTON_RADIUS),
-            ("tarantula-t3", T3_CENTER, T_BUTTON_RADIUS),
-            ("tarantula-home", HOME_CENTER, HOME_RADIUS),
-        ] {
-            assert_circle(SVG, id, cx, cy, radius);
-        }
     }
 
     fn layout() -> TarantulaLayout {
