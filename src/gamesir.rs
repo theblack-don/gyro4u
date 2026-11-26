@@ -7,10 +7,12 @@
 //! report has no timestamp, so sample timestamps come from the host wall clock
 //! in microseconds.
 //!
-//! The driver estimates and subtracts the gyro's startup bias. Keep the
-//! controller still during the roughly 0.5 s connect calibration; if it moves,
-//! the estimate is skipped and the raw bias remains.
+//! The driver estimates and subtracts the gyro's startup bias, then refreshes
+//! it from stationary ~3.5 s windows of raw samples. Keep the controller still
+//! during the roughly 0.5 s connect calibration; the startup estimate is
+//! provisional and is updated whenever a stable window becomes available.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -58,6 +60,11 @@ const GYRO_CALIBRATION_SAMPLES: usize = 32;
 const GYRO_BIAS_MIN_SAMPLES: usize = 16;
 const GYRO_BIAS_MAX_RANGE: i32 = 100;
 const GYRO_BIAS_MAX_MEAN_MAGNITUDE: f64 = 400.0;
+/// ~3.5 s at the 73 Hz state rate.
+const GYRO_BIAS_TRACKER_SAMPLES: usize = 256;
+const GYRO_BIAS_TRACKER_MAX_RANGE: i32 = 16;
+const GYRO_BIAS_TRACKER_MAX_MEAN_MAGNITUDE: f64 = 32.0;
+const GYRO_BIAS_TRACKER_UPDATE_THRESHOLD: i32 = 2;
 
 pub fn is_gamesir_vid(vid: u16) -> bool {
     vid == GAMESIR_VID
@@ -182,7 +189,21 @@ fn motion_axes(hw_gyro: [i16; 3], hw_accel: [i16; 3]) -> ([i16; 3], [i16; 3]) {
 
 /// Estimate a stationary gyro bias, rejecting moving or implausible samples.
 fn estimate_gyro_bias(samples: &[[i16; 3]]) -> Option<[i16; 3]> {
-    if samples.len() < GYRO_BIAS_MIN_SAMPLES {
+    estimate_gyro_bias_within(
+        samples,
+        GYRO_BIAS_MIN_SAMPLES,
+        GYRO_BIAS_MAX_RANGE,
+        GYRO_BIAS_MAX_MEAN_MAGNITUDE,
+    )
+}
+
+fn estimate_gyro_bias_within(
+    samples: &[[i16; 3]],
+    min_samples: usize,
+    max_range: i32,
+    max_mean_magnitude: f64,
+) -> Option<[i16; 3]> {
+    if samples.len() < min_samples {
         return None;
     }
     let mut min = [i32::MAX; 3];
@@ -196,17 +217,54 @@ fn estimate_gyro_bias(samples: &[[i16; 3]]) -> Option<[i16; 3]> {
             sum[axis] += value;
         }
     }
-    if (0..3).any(|axis| max[axis] - min[axis] > GYRO_BIAS_MAX_RANGE) {
+    if (0..3).any(|axis| max[axis] - min[axis] > max_range) {
         return None;
     }
     let count = samples.len() as f64;
     let means = sum.map(|total| f64::from(total) / count);
-    if means.iter().map(|mean| mean * mean).sum::<f64>()
-        > GYRO_BIAS_MAX_MEAN_MAGNITUDE * GYRO_BIAS_MAX_MEAN_MAGNITUDE
-    {
+    if means.iter().map(|mean| mean * mean).sum::<f64>() > max_mean_magnitude * max_mean_magnitude {
         return None;
     }
     Some(means.map(|mean| mean.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16))
+}
+
+/// Sliding window that refreshes the gyro bias from stationary samples.
+struct GyroBiasTracker {
+    samples: VecDeque<[i16; 3]>,
+}
+
+impl GyroBiasTracker {
+    fn new() -> Self {
+        Self {
+            samples: VecDeque::with_capacity(GYRO_BIAS_TRACKER_SAMPLES),
+        }
+    }
+
+    /// Returns a new bias when a full stationary window differs enough from the current one.
+    fn push(&mut self, sample: [i16; 3], current_bias: [i16; 3]) -> Option<[i16; 3]> {
+        if self.samples.len() == GYRO_BIAS_TRACKER_SAMPLES {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        if self.samples.len() < GYRO_BIAS_TRACKER_SAMPLES {
+            return None;
+        }
+        let bias = estimate_gyro_bias_within(
+            self.samples.make_contiguous(),
+            GYRO_BIAS_TRACKER_SAMPLES,
+            GYRO_BIAS_TRACKER_MAX_RANGE,
+            GYRO_BIAS_TRACKER_MAX_MEAN_MAGNITUDE,
+        )?;
+        let changed = (0..3).any(|axis| {
+            (i32::from(bias[axis]) - i32::from(current_bias[axis])).abs()
+                >= GYRO_BIAS_TRACKER_UPDATE_THRESHOLD
+        });
+        if !changed {
+            return None;
+        }
+        self.samples.clear();
+        Some(bias)
+    }
 }
 
 fn apply_gyro_bias(state: &mut ControllerState, bias: [i16; 3]) {
@@ -402,6 +460,7 @@ pub struct GameSirTarantulaPro {
     /// Wall-clock base for sample timestamps; the report has no timestamp.
     sensor_start: Instant,
     gyro_bias: [i16; 3],
+    gyro_bias_tracker: GyroBiasTracker,
 }
 
 impl GameSirTarantulaPro {
@@ -478,6 +537,7 @@ impl GameSirTarantulaPro {
                 last_state_at: Instant::now(),
                 sensor_start: Instant::now(),
                 gyro_bias: [0; 3],
+                gyro_bias_tracker: GyroBiasTracker::new(),
             };
 
             if let Ok(info) = driver.read_get_info() {
@@ -591,7 +651,7 @@ impl GameSirTarantulaPro {
             })
     }
 
-    /// Best-effort startup bias capture; failures leave the bias at zero.
+    /// Best-effort startup bias capture; the stationary tracker refreshes it later.
     fn calibrate_gyro_bias(&mut self) {
         let deadline = Instant::now() + GYRO_CALIBRATION_TIMEOUT;
         let mut samples = Vec::with_capacity(GYRO_CALIBRATION_SAMPLES);
@@ -617,6 +677,9 @@ impl GameSirTarantulaPro {
         let timestamp = self.sensor_start.elapsed().as_micros() as u32;
         match decode_report(data, timestamp) {
             DecodedReport::State(mut state) => {
+                if let Some(bias) = self.gyro_bias_tracker.push(state.gyro, self.gyro_bias) {
+                    self.gyro_bias = bias;
+                }
                 apply_gyro_bias(&mut state, self.gyro_bias);
                 self.last_state_at = Instant::now();
                 Some(*state)
@@ -838,6 +901,18 @@ mod tests {
         }
     }
 
+    fn fill_gyro_tracker(
+        tracker: &mut GyroBiasTracker,
+        current_bias: [i16; 3],
+        sample: [i16; 3],
+    ) -> Option<[i16; 3]> {
+        let mut update = None;
+        for _ in 0..GYRO_BIAS_TRACKER_SAMPLES {
+            update = tracker.push(sample, current_bias);
+        }
+        update
+    }
+
     #[test]
     fn builds_exact_frames() {
         let raw = set_raw_state_report(1);
@@ -1035,6 +1110,93 @@ mod tests {
     fn rejects_gyro_bias_with_large_mean_magnitude() {
         assert_eq!(estimate_gyro_bias(&[[400, 0, 0]; 32]), Some([400, 0, 0]));
         assert_eq!(estimate_gyro_bias(&[[401, 0, 0]; 32]), None);
+    }
+
+    #[test]
+    fn returns_stationary_gyro_bias_from_zero() {
+        let mut tracker = GyroBiasTracker::new();
+        let mut bias = None;
+        for index in 0..GYRO_BIAS_TRACKER_SAMPLES {
+            let pitch = if index % 2 == 0 { 8 } else { 10 };
+            bias = tracker.push([pitch, 3, -7], [0; 3]);
+        }
+        assert_eq!(bias, Some([9, 3, -7]));
+    }
+
+    #[test]
+    fn ignores_identical_stationary_gyro_bias() {
+        let mut tracker = GyroBiasTracker::new();
+        assert_eq!(
+            fill_gyro_tracker(&mut tracker, [9, 3, -7], [9, 3, -7]),
+            None
+        );
+    }
+
+    #[test]
+    fn returns_stationary_gyro_bias_changed_at_threshold() {
+        let mut tracker = GyroBiasTracker::new();
+        assert_eq!(
+            fill_gyro_tracker(&mut tracker, [9, 3, -5], [9, 3, -7]),
+            Some([9, 3, -7])
+        );
+    }
+
+    #[test]
+    fn ignores_stationary_gyro_bias_one_count_from_current() {
+        let mut tracker = GyroBiasTracker::new();
+        assert_eq!(
+            fill_gyro_tracker(&mut tracker, [9, 3, -6], [9, 3, -7]),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_moving_gyro_bias_window() {
+        let mut tracker = GyroBiasTracker::new();
+        for _ in 0..GYRO_BIAS_TRACKER_SAMPLES - 1 {
+            assert_eq!(tracker.push([9, 3, -7], [0; 3]), None);
+        }
+        assert_eq!(tracker.push([9, 100, -7], [0; 3]), None);
+    }
+
+    #[test]
+    fn rejects_short_gyro_bias_window() {
+        let mut tracker = GyroBiasTracker::new();
+        for _ in 0..GYRO_BIAS_TRACKER_SAMPLES - 1 {
+            assert_eq!(tracker.push([9, 3, -7], [0; 3]), None);
+        }
+    }
+
+    #[test]
+    fn rejects_implausible_stationary_gyro_bias() {
+        let mut tracker = GyroBiasTracker::new();
+        for _ in 0..GYRO_BIAS_TRACKER_SAMPLES {
+            assert_eq!(tracker.push([40, 0, 0], [0; 3]), None);
+        }
+    }
+
+    #[test]
+    fn updates_gyro_bias_from_later_stationary_window() {
+        let mut tracker = GyroBiasTracker::new();
+        assert_eq!(
+            fill_gyro_tracker(&mut tracker, [0; 3], [9, 3, -7]),
+            Some([9, 3, -7])
+        );
+        assert_eq!(
+            fill_gyro_tracker(&mut tracker, [9, 3, -7], [11, 3, -7]),
+            Some([11, 3, -7])
+        );
+    }
+
+    #[test]
+    fn keeps_updated_gyro_bias_through_movement() {
+        let mut tracker = GyroBiasTracker::new();
+        let bias = fill_gyro_tracker(&mut tracker, [0; 3], [9, 3, -7]).expect("initial update");
+        assert_eq!(bias, [9, 3, -7]);
+
+        for _ in 0..GYRO_BIAS_TRACKER_SAMPLES {
+            assert_eq!(tracker.push([400, -400, 400], bias), None);
+        }
     }
 
     #[test]
