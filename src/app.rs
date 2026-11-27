@@ -5,6 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(not(target_os = "windows"))]
+use crate::platform::find_dualsense_card;
+
 use crate::{
     backend::{ControllerBackend, DirectBackend, IpcBackend, TRIGGER_OFF},
     common::*,
@@ -16,6 +19,7 @@ use crate::{
     inputs::{ControllerKind, ControllerState},
     ipc::{DaemonCompatibility, IpcClient, probe_daemon, socket_path},
     keycodes,
+    platform::{TouchpadFilter, UsbHapticStream},
     profiles::{
         Profile, ProfileManager, ProfileNameConflict, TriggerConfig, profile_name_conflict,
     },
@@ -24,7 +28,6 @@ use crate::{
     state::*,
     stick_mouse::StickMouseConfig,
     theme::{Theme, ThemeManager},
-    touchpad_filter::TouchpadFilter,
     transform::InputTransform,
     util::{RateLimiter, mlock},
 };
@@ -137,7 +140,7 @@ pub(crate) struct DS4UApp {
     last_daemon_probe: Instant,
     discovery_error_limiter: RateLimiter,
     haptic_stream: crate::haptics_stream::HapticStream,
-    usb_haptic_stream: crate::usb_haptics::UsbHapticStream,
+    usb_haptic_stream: UsbHapticStream,
     daemon_raw_active: bool,
     touchpad_filter: Option<TouchpadFilter>,
 }
@@ -280,7 +283,7 @@ impl DS4UApp {
             last_daemon_probe: Instant::now() - Duration::from_secs(10),
             discovery_error_limiter: RateLimiter::new(Duration::from_secs(5)),
             haptic_stream: crate::haptics_stream::HapticStream::new(),
-            usb_haptic_stream: crate::usb_haptics::UsbHapticStream::new(),
+            usb_haptic_stream: UsbHapticStream::new(),
             daemon_raw_active: false,
             touchpad_filter: None,
         };
@@ -907,13 +910,21 @@ impl DS4UApp {
                 }
             }
             Some(false) => {
-                let Some(card) = crate::usb_haptics::find_dualsense_card() else {
+                #[cfg(target_os = "windows")]
+                {
                     self.error_message =
-                        "Couldn't find the controller's USB audio device".to_string();
-                    return;
-                };
-                let _ = self.usb_haptic_stream.start(card, pattern, strength, speed);
-                self.status_message = "Streaming raw haptics (USB)".to_string();
+                        "USB raw haptics are not supported on Windows yet".to_string();
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let Some(card) = find_dualsense_card() else {
+                        self.error_message =
+                            "Couldn't find the controller's USB audio device".to_string();
+                        return;
+                    };
+                    let _ = self.usb_haptic_stream.start(card, pattern, strength, speed);
+                    self.status_message = "Streaming raw haptics (USB)".to_string();
+                }
             }
             None => {
                 self.error_message = "No controller connected".to_string();
@@ -2100,13 +2111,18 @@ impl DS4UApp {
                 return;
             }
         };
-        match std::process::Command::new(&exe)
+        let mut command = std::process::Command::new(&exe);
+        command
             .arg("--daemon")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
+        match command.spawn() {
             Ok(_) => {
                 self.status_message = "Daemon starting...".into();
                 self.error_message.clear();

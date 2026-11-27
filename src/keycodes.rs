@@ -1,4 +1,7 @@
-//! Canonical key names and their Linux evdev key codes.
+//! Canonical key names and their evdev key codes.
+//!
+//! Evdev codes are the stored binding format on every platform; the Windows
+//! backend maps them to scancodes or virtual keys in `platform::keymap`.
 
 use std::sync::LazyLock;
 

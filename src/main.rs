@@ -17,12 +17,11 @@ mod firmware_controller;
 mod gamesir;
 mod gyro;
 mod haptics_stream;
-mod input_grab;
 mod input_poller;
 mod inputs;
 mod ipc;
 mod keycodes;
-mod noctalia;
+mod platform;
 mod profiles;
 mod remap;
 mod settings;
@@ -31,15 +30,26 @@ mod steam_controller;
 mod stick_mouse;
 mod style;
 mod theme;
-mod touchpad_filter;
 mod trackpad_mouse;
 mod transform;
 mod ui;
-mod uinput;
-mod usb_haptics;
 mod util;
+
+#[cfg(target_os = "linux")]
+mod input_grab;
+#[cfg(target_os = "linux")]
+mod noctalia;
+#[cfg(target_os = "linux")]
+mod touchpad_filter;
+#[cfg(target_os = "linux")]
+mod uinput;
+#[cfg(target_os = "linux")]
+mod usb_haptics;
+#[cfg(target_os = "linux")]
 mod virtual_gamepad;
+#[cfg(target_os = "linux")]
 mod virtual_keyboard;
+#[cfg(target_os = "linux")]
 mod virtual_mouse;
 
 fn main() -> Result<(), eframe::Error> {

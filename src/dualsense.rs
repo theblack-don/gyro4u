@@ -157,7 +157,7 @@ Please connect your controller via USB or Bluetooth."
         let product_id = device_info.product_id();
         let serial = device_info.serial_number().unwrap_or("Unknown").to_string();
         let device = device_info.open_device(api)?;
-        let is_bt = device_info.interface_number() == -1;
+        let is_bt = crate::controller::is_bluetooth_info(device_info);
         let vendor_id = device_info.vendor_id();
 
         Ok(DualSense {

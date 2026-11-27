@@ -3,21 +3,13 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::keycodes;
+use crate::platform::key_transitions;
 use crate::uinput::{EV_KEY, UinputDevice, UinputSpec};
 
 const NAME: &str = "Gyro4U Virtual Keyboard";
 const VENDOR: u16 = 0x1209;
 const PRODUCT: u16 = 0x0001;
 const VERSION: u16 = 0x8111;
-
-const KEY_LEFTCTRL: u16 = 29;
-const KEY_LEFTSHIFT: u16 = 42;
-const KEY_RIGHTSHIFT: u16 = 54;
-const KEY_LEFTALT: u16 = 56;
-const KEY_RIGHTCTRL: u16 = 97;
-const KEY_RIGHTALT: u16 = 100;
-const KEY_LEFTMETA: u16 = 125;
-const KEY_RIGHTMETA: u16 = 126;
 
 pub struct VirtualKeyboard {
     dev: UinputDevice,
@@ -76,30 +68,6 @@ impl VirtualKeyboard {
         }
         self.prev.clear();
         Ok(())
-    }
-}
-
-/// Returns `(press, release)` in emission order.
-///
-/// Modifiers go down before other keys and come up after them so combined
-/// bindings (e.g. LeftAlt + X) are never briefly seen as plain keys.
-fn key_transitions(prev: &HashSet<u16>, desired: &HashSet<u16>) -> (Vec<u16>, Vec<u16>) {
-    let mut press: Vec<u16> = desired.difference(prev).copied().collect();
-    press.sort_unstable_by_key(|code| (modifier_rank(*code).unwrap_or(4), *code));
-
-    let mut release: Vec<u16> = prev.difference(desired).copied().collect();
-    release.sort_unstable_by_key(|code| (u8::from(modifier_rank(*code).is_some()), *code));
-
-    (press, release)
-}
-
-fn modifier_rank(code: u16) -> Option<u8> {
-    match code {
-        KEY_LEFTCTRL | KEY_RIGHTCTRL => Some(0),
-        KEY_LEFTSHIFT | KEY_RIGHTSHIFT => Some(1),
-        KEY_LEFTALT | KEY_RIGHTALT => Some(2),
-        KEY_LEFTMETA | KEY_RIGHTMETA => Some(3),
-        _ => None,
     }
 }
 

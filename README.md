@@ -2,7 +2,7 @@
 
 # Gyro4U
 
-Native Linux GUI tool for configuring DualSense controllers, the 2026 Steam Controller, the 8BitDo Pro 3, the Flydigi Apex 5 and Vader 5 Pro, and the GameSir Tarantula Pro.
+Native Linux GUI tool for configuring DualSense controllers, the 2026 Steam Controller, the 8BitDo Pro 3, the Flydigi Apex 5 and Vader 5 Pro, and the GameSir Tarantula Pro. Windows builds are available as an early preview — see [Windows](#windows-early-preview).
 
 > [!note]
 > **DualSense Edge** is supported and tested, including the Edge paddles and Fn buttons.
@@ -265,6 +265,25 @@ Once the project has built:
 sudo dnf install gyro4u
 ```
 
+### Windows (early preview)
+
+Gyro4U builds and runs on Windows 10/11 x86_64 without drivers. Controller
+configuration, live input, HID settings, gyro/stick/touchpad-to-mouse, and
+keyboard/mouse remapping work. Virtual gamepad output, physical-device hiding
+(HidHide), USB raw haptics, touchpad gestures, and the Noctalia theme are not
+available yet, so expect native controller input alongside remapped output.
+
+Download the `gyro4u-windows-x86_64` artifact from the **Build** workflow, or
+build with Rust stable MSVC:
+
+```powershell
+cargo build --release
+.\target\release\gyro4u.exe
+```
+
+See [docs/WINDOWS.md](docs/WINDOWS.md) for current limitations, `--list-devices`,
+daemon and profile usage, configuration paths, and troubleshooting.
+
 ## Building
 
 ### Requirements
@@ -337,7 +356,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 Running `gyro4u` with no arguments launches the GUI.
 `--daemon` runs the background daemon; `--list-devices` only enumerates HID
 devices. The status and profile commands talk to a running daemon over its Unix
-socket:
+socket (Linux) or named pipe (Windows):
 
 
 | Command | Description |

@@ -61,15 +61,15 @@ impl Seed {
     }
 }
 
-pub fn theme() -> Theme {
+pub fn theme() -> Option<Theme> {
     let colors = gtk_seed().or(kde_seed()).finish();
 
-    Theme {
+    Some(Theme {
         id: ID.into(),
         name: "Noctalia".into(),
         dark_mode: is_dark(colors.window_bg),
         colors,
-    }
+    })
 }
 
 pub fn source_mtime() -> Option<SystemTime> {

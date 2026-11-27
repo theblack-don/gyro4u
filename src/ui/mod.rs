@@ -186,7 +186,7 @@ impl App for DS4UApp {
 
         self.check_firmware_progress();
 
-        if self.theme.id == crate::noctalia::ID
+        if self.theme.id == crate::platform::noctalia::ID
             && let Some(theme) = self.theme_manager.poll_noctalia()
         {
             self.theme = theme;

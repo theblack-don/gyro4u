@@ -1,9 +1,11 @@
 use std::{
     env,
     io::{self, BufRead, BufReader, Write},
-    path::PathBuf,
     time::{Duration, Instant},
 };
+
+#[cfg(windows)]
+use interprocess::TryClone;
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,7 @@ use crate::{
     transform::InputTransform,
 };
 
+#[cfg(unix)]
 mod transport {
     use std::{
         io,
@@ -38,6 +41,40 @@ mod transport {
     }
     pub fn addr_to_string(addr: &Addr) -> String {
         addr.display().to_string()
+    }
+}
+
+#[cfg(windows)]
+mod transport {
+    use std::{io, time::Duration};
+
+    use interprocess::{
+        ConnectWaitMode,
+        local_socket::{ConnectOptions, GenericNamespaced, ListenerOptions, ToNsName},
+    };
+
+    pub type Addr = String;
+    pub type Stream = interprocess::local_socket::Stream;
+    pub type Listener = interprocess::local_socket::Listener;
+
+    pub fn connect(addr: &Addr) -> io::Result<Stream> {
+        let name = addr.as_str().to_ns_name::<GenericNamespaced>()?;
+        ConnectOptions::new()
+            .name(name)
+            .wait_mode(ConnectWaitMode::Timeout(Duration::ZERO))
+            .connect_sync()
+    }
+    pub fn bind(addr: &Addr) -> io::Result<Listener> {
+        let name = addr.as_str().to_ns_name::<GenericNamespaced>()?;
+        ListenerOptions::new().name(name).create_sync()
+    }
+    pub fn set_timeout(_s: &Stream, _d: Duration) -> io::Result<()> {
+        // Interprocess 2.4 named pipes do not support I/O timeouts. Connecting
+        // is non-blocking, and the daemon answers the handshake immediately.
+        Ok(())
+    }
+    pub fn addr_to_string(addr: &Addr) -> String {
+        format!(r"\\.\pipe\{addr}")
     }
 }
 
@@ -95,10 +132,29 @@ pub fn classify_handshake(response: Result<DaemonResponse>) -> DaemonCompatibili
     }
 }
 
-pub fn daemon_endpoint() -> PathBuf {
+#[cfg(unix)]
+pub fn daemon_endpoint() -> DaemonAddr {
     dirs::runtime_dir()
         .unwrap_or_else(env::temp_dir)
         .join("gyro4u.socket")
+}
+
+#[cfg(windows)]
+pub fn daemon_endpoint() -> DaemonAddr {
+    let user = env::var("USERNAME")
+        .or_else(|_| env::var("USER"))
+        .unwrap_or_else(|_| "default".to_string());
+    let user: String = user
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("gyro4u-{user}")
 }
 
 #[inline]
@@ -110,12 +166,16 @@ pub fn bind_daemon(addr: &DaemonAddr) -> io::Result<DaemonListener> {
     transport::bind(addr)
 }
 
+#[cfg(unix)]
 pub fn cleanup_endpoint(addr: &DaemonAddr) {
     if addr.exists() {
         use std::fs;
         let _ = fs::remove_file(addr);
     }
 }
+
+#[cfg(windows)]
+pub fn cleanup_endpoint(_addr: &DaemonAddr) {}
 
 pub fn addr_display(addr: &DaemonAddr) -> String {
     transport::addr_to_string(addr)

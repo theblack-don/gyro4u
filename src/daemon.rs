@@ -10,30 +10,34 @@ use std::{
 
 use hidapi::HidApi;
 
+#[cfg(target_os = "windows")]
+use interprocess::TryClone as _;
+#[cfg(target_os = "windows")]
+use interprocess::local_socket::traits::ListenerExt as _;
+
 use crate::{
     common::{BatteryInfo, HapticPattern, LightbarEffect, TouchpadMode},
     controller::{self, PhysicalController, PolledInput},
     dualsense::{HAPTICS_PACKET_FRAMES, HAPTICS_SAMPLE_RATE},
     gyro::GyroRuntime,
     haptics_stream::generate_packet,
-    input_grab::InputGrab,
     inputs::{ControllerKind, ControllerState},
     ipc::{
         APP_VERSION, DaemonCommand, DaemonResponse, DaemonStream, IPC_PROTOCOL_VERSION, IpcClient,
         addr_display, bind_daemon, cleanup_endpoint, daemon_endpoint,
+    },
+    platform::{
+        InputGrab, TouchpadFilter, TouchpadModeHandle, TouchpadOwnedHandle, VirtualGamepad,
+        VirtualKeyboard, VirtualMouse,
     },
     profiles::ProfileManager,
     remap::{AuxOutput, Binding, ProfileAction, RemapEngine},
     settings::SettingsManager,
     steam_controller::SteamPadSide,
     stick_mouse::StickMouseRuntime,
-    touchpad_filter::{TouchpadFilter, TouchpadModeHandle, TouchpadOwnedHandle},
     trackpad_mouse::{SteamPadMouseMode, SteamTrackpadMouseRuntime},
     transform::{GyroProcessor, InputTransform},
     util::{RateLimiter, mlock, rlock, wait_cv, wlock},
-    virtual_gamepad::VirtualGamepad,
-    virtual_keyboard::VirtualKeyboard,
-    virtual_mouse::VirtualMouse,
 };
 
 const TAG: &str = "[gyro4u daemon]";
@@ -390,15 +394,17 @@ fn cycle_profile(state: &Arc<DaemonState>) -> String {
 }
 
 pub fn run_daemon() {
-    use std::os::unix::io::AsRawFd;
-
     let addr = daemon_endpoint();
 
-    let lock_path = dirs::runtime_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("gyro4u.lock");
+    let mut lock_dir = crate::common::config_dir();
+    if std::fs::create_dir_all(&lock_dir).is_err() {
+        lock_dir = std::env::temp_dir().join("gyro4u");
+        let _ = std::fs::create_dir_all(&lock_dir);
+    }
+    let lock_path = lock_dir.join("gyro4u.lock");
     let instance_lock = match std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
         .truncate(false)
         .open(&lock_path)
@@ -409,16 +415,20 @@ pub fn run_daemon() {
             return;
         }
     };
-    if unsafe { libc::flock(instance_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::EWOULDBLOCK) => println!("{} daemon already running", TAG),
-            _ => eprintln!("{} cannot lock {}: {}", TAG, lock_path.display(), err),
+    match instance_lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            println!("{} daemon already running", TAG);
+            return;
         }
-        return;
+        Err(std::fs::TryLockError::Error(e)) => {
+            eprintln!("{} cannot lock {}: {}", TAG, lock_path.display(), e);
+            return;
+        }
     }
     let _instance_lock = instance_lock;
 
+    #[cfg(unix)]
     if std::os::unix::net::UnixStream::connect(&addr).is_ok() {
         println!("{} daemon already running", TAG);
         return;
@@ -797,8 +807,6 @@ fn gamepad_loop(state: Arc<DaemonState>) {
             at: Instant::now(),
         });
 
-        let Some(pad) = pad.as_mut() else { continue };
-
         let (transform, touchpad_allowed) = {
             let inner = rlock(&state.inner);
             let kind = *rlock(&state.device_kind);
@@ -923,7 +931,10 @@ fn gamepad_loop(state: Arc<DaemonState>) {
         );
         aux.wheel.0 += pad_output.wheel.0;
         aux.wheel.1 += pad_output.wheel.1;
-        let _ = pad.update(&st);
+        // Keyboard/mouse output still runs when virtual gamepad output is unsupported.
+        if let Some(pad) = pad.as_mut() {
+            let _ = pad.update(&st);
+        }
         if let Some(keyboard) = keyboard.as_mut() {
             let _ = keyboard.apply(&aux.keys);
         }
@@ -1166,6 +1177,7 @@ fn device_connection_loop(state: Arc<DaemonState>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn hotplug_thread(state: Arc<DaemonState>) {
     use std::os::fd::AsRawFd;
 
@@ -1214,6 +1226,18 @@ fn hotplug_thread(state: Arc<DaemonState>) {
             *mlock(lock) = true;
             cvar.notify_all();
         }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn hotplug_thread(state: Arc<DaemonState>) {
+    println!("{} polling hotplug watcher active (1 s)", TAG);
+    let (lock, cvar) = &state.hotplug;
+
+    loop {
+        sleep(Duration::from_secs(1));
+        *mlock(lock) = true;
+        cvar.notify_all();
     }
 }
 

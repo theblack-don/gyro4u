@@ -1,13 +1,7 @@
-use std::{
-    fs::File,
-    io::Read,
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
-    sync::atomic::AtomicU64,
-    time::Duration,
-};
+use std::{sync::atomic::AtomicU64, time::Duration};
 
 use anyhow::{Result, anyhow, bail};
-use hidapi::HidApi;
+use hidapi::{BusType, DeviceInfo, HidApi};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -265,11 +259,20 @@ pub struct SkippedDevice {
     pub reason: String,
 }
 
+pub fn is_bluetooth_info(info: &DeviceInfo) -> bool {
+    match info.bus_type() {
+        BusType::Bluetooth => true,
+        BusType::Usb => false,
+        _ => info.interface_number() == -1,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HidEntry {
     vendor_id: u16,
     product_id: u16,
     interface_number: i32,
+    is_bluetooth: bool,
     serial: Option<String>,
     path: String,
 }
@@ -302,6 +305,7 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
             vendor_id: info.vendor_id(),
             product_id: info.product_id(),
             interface_number: info.interface_number(),
+            is_bluetooth: is_bluetooth_info(info),
             serial: info
                 .serial_number()
                 .filter(|s| !s.is_empty())
@@ -316,7 +320,7 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
                 let identity = entry.serial.clone().unwrap_or_else(|| entry.path.clone());
                 let transport = match family {
                     ControllerFamily::DualSense => {
-                        if entry.interface_number == -1 {
+                        if entry.is_bluetooth {
                             "Bluetooth".to_string()
                         } else {
                             "USB".to_string()
@@ -327,7 +331,7 @@ pub fn scan_devices(api: &HidApi) -> (Vec<DetectedDevice>, Vec<SkippedDevice>) {
                             .label()
                     }
                     ControllerFamily::EightBitDo => {
-                        if entry.interface_number == -1 {
+                        if entry.is_bluetooth {
                             "Bluetooth (experimental)".to_string()
                         } else {
                             "USB".to_string()
@@ -549,9 +553,9 @@ impl SteamLiveSlot {
     }
 }
 
-/// Read-only liveness probe for idle Steam puck/receiver slots. It opens every
-/// candidate slot non-blocking and polls them together, so one 35 ms window
-/// covers all slots. It never writes feature/output reports.
+/// Read-only liveness probe for idle Steam puck/receiver slots. It opens each
+/// candidate slot and reads with a 35 ms timeout per slot. It never writes
+/// feature/output reports.
 pub fn probe_steam_slots(api: &HidApi) -> SteamProbeResult {
     let (devices, _) = scan_devices(api);
     let candidates: Vec<&DetectedDevice> = devices.iter().filter(|d| is_receiver_slot(d)).collect();
@@ -562,14 +566,18 @@ pub fn probe_steam_slots(api: &HidApi) -> SteamProbeResult {
         };
     }
 
-    let mut opened: Vec<(File, &DetectedDevice)> = Vec::new();
+    let mut opened: Vec<(hidapi::HidDevice, &DetectedDevice)> = Vec::new();
     for device in candidates {
-        let result = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(&device.path);
-        if let Ok(file) = result {
-            opened.push((file, device));
+        let info = api.device_list().find(|info| {
+            info.vendor_id() == device.vendor_id
+                && info.product_id() == device.product_id
+                && info.interface_number() == device.interface_number
+                && info.path().to_string_lossy().as_ref() == device.path.as_str()
+        });
+        if let Some(info) = info
+            && let Ok(dev) = info.open_device(api)
+        {
+            opened.push((dev, device));
         }
     }
     if opened.is_empty() {
@@ -579,50 +587,10 @@ pub fn probe_steam_slots(api: &HidApi) -> SteamProbeResult {
         };
     }
 
-    let mut pollfds: Vec<libc::pollfd> = opened
-        .iter()
-        .map(|(file, _)| libc::pollfd {
-            fd: file.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        })
-        .collect();
-    let ready = loop {
-        // SAFETY: pollfds is a valid, exclusively borrowed array for the
-        // duration of the call and contains only open file descriptors.
-        let ready = unsafe {
-            libc::poll(
-                pollfds.as_mut_ptr(),
-                pollfds.len() as libc::nfds_t,
-                STEAM_PROBE_TIMEOUT_MS,
-            )
-        };
-        if ready >= 0 {
-            break ready;
-        }
-        if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-            continue;
-        }
-        return SteamProbeResult {
-            receiver_present: true,
-            state: SteamSlotState::Unknown,
-        };
-    };
-    if ready == 0 {
-        return SteamProbeResult {
-            receiver_present: true,
-            state: SteamSlotState::Unknown,
-        };
-    }
-
     let mut state = SteamSlotState::Unknown;
-    for (index, pfd) in pollfds.iter().enumerate() {
-        let (file, device) = &mut opened[index];
-        if pfd.revents & libc::POLLIN == 0 {
-            continue;
-        }
+    for (device, slot) in &opened {
         let mut buf = [0u8; 128];
-        let read = match file.read(&mut buf) {
+        let read = match device.read_timeout(&mut buf, STEAM_PROBE_TIMEOUT_MS) {
             Ok(n) => n,
             Err(_) => continue,
         };
@@ -633,7 +601,7 @@ pub fn probe_steam_slots(api: &HidApi) -> SteamProbeResult {
             steam_controller::ReportLiveness::Live => {
                 return SteamProbeResult {
                     receiver_present: true,
-                    state: SteamSlotState::Live(SteamLiveSlot::from_device(device)),
+                    state: SteamSlotState::Live(SteamLiveSlot::from_device(slot)),
                 };
             }
             steam_controller::ReportLiveness::NotLive => state = SteamSlotState::NotLive,
@@ -1402,6 +1370,22 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
                 device.transport,
                 device.identity
             ));
+            let info = api.device_list().find(|info| {
+                info.vendor_id() == device.vendor_id
+                    && info.product_id() == device.product_id
+                    && info.interface_number() == device.interface_number
+                    && info.path().to_string_lossy().as_ref() == device.path.as_str()
+            });
+            match info {
+                Some(info) => out.push_str(&format!(
+                    "    interface: {}  bus: {:?}  usage: {:04x}:{:04x}\n",
+                    device.interface_number,
+                    info.bus_type(),
+                    info.usage_page(),
+                    info.usage()
+                )),
+                None => out.push_str(&format!("    interface: {}\n", device.interface_number)),
+            }
             out.push_str(&format!("    path: {}\n", device.path));
         }
     }
@@ -1418,6 +1402,7 @@ pub fn format_device_report(api: &HidApi, preference: ControllerPreference) -> S
                 identity,
                 device.reason
             ));
+            out.push_str(&format!("    path: {}\n", device.path));
         }
     }
 
@@ -2031,6 +2016,7 @@ mod tests {
             vendor_id: crate::steam_controller::STEAM_VID,
             product_id: crate::steam_controller::STEAM_PID_PUCK,
             interface_number,
+            is_bluetooth: false,
             serial: serial.map(str::to_string),
             path: path.to_string(),
         }

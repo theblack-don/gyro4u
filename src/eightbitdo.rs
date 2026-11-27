@@ -291,7 +291,12 @@ impl EightBitDoPro3 {
             bail!("No 8BitDo Pro 3 found. Connect it via USB-C in D mode.");
         }
 
-        candidates.sort_by_key(|info| (info.interface_number() == -1, info.interface_number()));
+        candidates.sort_by_key(|info| {
+            (
+                crate::controller::is_bluetooth_info(info),
+                info.interface_number(),
+            )
+        });
 
         let mut last_error = None;
         for info in candidates {
@@ -319,7 +324,7 @@ impl EightBitDoPro3 {
                 product_id,
                 serial,
                 identity,
-                is_bluetooth: info.interface_number() == -1,
+                is_bluetooth: crate::controller::is_bluetooth_info(info),
                 update_mode: Arc::new(AtomicBool::new(false)),
                 last_battery: None,
             });

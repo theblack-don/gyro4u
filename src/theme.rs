@@ -83,13 +83,11 @@ pub struct Theme {
 }
 
 pub fn builtin_themes() -> Vec<Theme> {
-    vec![
-        default(),
-        author_theme(),
-        deep_dark(),
-        tokyo_night(),
-        crate::noctalia::theme(),
-    ]
+    let mut themes = vec![default(), author_theme(), deep_dark(), tokyo_night()];
+    if let Some(noctalia) = crate::platform::noctalia::theme() {
+        themes.push(noctalia);
+    }
+    themes
 }
 
 pub fn default_theme() -> Theme {
@@ -204,7 +202,7 @@ impl ThemeManager {
 
     pub fn reload(&mut self) {
         self.cache = self.scan();
-        self.noctalia_mtime = crate::noctalia::source_mtime();
+        self.noctalia_mtime = crate::platform::noctalia::source_mtime();
     }
 
     pub fn poll_noctalia(&mut self) -> Option<Theme> {
@@ -213,12 +211,12 @@ impl ThemeManager {
         }
         self.last_noctalia_poll = Instant::now();
 
-        if crate::noctalia::source_mtime() == self.noctalia_mtime {
+        if crate::platform::noctalia::source_mtime() == self.noctalia_mtime {
             return None;
         }
 
         self.reload();
-        Some(self.load_by_id(crate::noctalia::ID))
+        Some(self.load_by_id(crate::platform::noctalia::ID))
     }
 
     fn theme_path(&self, id: &str) -> PathBuf {
